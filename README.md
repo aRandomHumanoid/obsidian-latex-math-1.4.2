@@ -16,7 +16,7 @@
 
 </div>
 
-**LaTeX Math** is an [Obsidian](https://obsidian.md/) plugin which adds mathematical evaluation of LaTeX math blocks to your notes, using [Sympy](https://www.sympy.org).
+**LaTeX Math** is an [Obsidian](https://obsidian.md/) plugin that adds mathematical evaluation of LaTeX math blocks to your notes, using [Sympy](https://www.sympy.org).
 
 ![demo](readme-assets/frontpage-demo.gif)
 `Evaluate LaTeX expression` is bound to `Alt + B` in the above demo.
