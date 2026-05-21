@@ -39,6 +39,9 @@ class LmatEnvironment(BaseModel):
 
     solve_domain: Optional[str] = None
 
+    # Per-document significant-figures override (design_docs §"Rendering" / §9).
+    render_sig_figs: Optional[int] = None
+
     # Create a definition store populated with definitions based on the environments symbols, variables and functions fields.
     @staticmethod
     def create_definition_store(environment: Self) -> DefinitionStore:

@@ -19,7 +19,8 @@ export class LmatEnvironment {
             parsed_lmat_block.symbols,
             definitions,
             parsed_lmat_block.units?.system,
-            parsed_lmat_block.solve?.domain
+            parsed_lmat_block.solve?.domain,
+            parsed_lmat_block.render?.sig_figs,
         );
     }
 
@@ -109,7 +110,12 @@ export class LmatEnvironment {
         /**
          * the domain is a sympy expression, evaluating to the default solution domain of any equation solutions.
          */
-        public solve_domain: string | undefined = undefined
+        public solve_domain: string | undefined = undefined,
+        /**
+         * significant figures for Smart Solve numeric output, configured via the
+         * `[render] sig_figs` key of an lmat block (design_docs §"Rendering").
+         */
+        public render_sig_figs: number | undefined = undefined,
     ) { }
 
     // regex for extracting the contents of an lmat code block.

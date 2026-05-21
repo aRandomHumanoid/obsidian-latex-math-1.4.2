@@ -3,6 +3,7 @@ import path from 'path';
 import { EvaluateCommand } from '/controllers/commands/EvaluateCommand';
 import { LatexMathCommand } from '/controllers/commands/LatexMathCommand';
 import { SolveCommand } from '/controllers/commands/SolveCommand';
+import { SmartSolveCommand } from '/controllers/commands/SmartSolveCommand';
 import { ConvertSympyCommand } from '/controllers/commands/ConvertSympyCommand';
 import { TruthTableCommand } from '/controllers/commands/TruthTableCommand';
 import { UnitConvertCommand } from '/controllers/commands/UnitConvertCommand';
@@ -66,6 +67,7 @@ export default class LatexMathPlugin extends Plugin {
             [new EvaluateCommand(EvaluateMode.EXPAND, response_verifier), 'Expand LaTeX expression'],
             [new EvaluateCommand(EvaluateMode.FACTOR, response_verifier), 'Factor LaTeX expression'],
             [new EvaluateCommand(EvaluateMode.APART, response_verifier), 'Partial fraction decompose LaTeX expression'],
+            [new SmartSolveCommand(response_verifier), 'Smart Solve LaTeX expression'],
             [new SolveCommand(response_verifier), 'Solve LaTeX expression'],
             [new ConvertSympyCommand(response_verifier), 'Convert LaTeX expression to Sympy'],
             [new UnitConvertCommand(response_verifier), 'Convert units in LaTeX expression'],

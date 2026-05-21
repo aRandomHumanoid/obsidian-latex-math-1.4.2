@@ -5,7 +5,7 @@ on:
     tags:
       - "*"
 env:
-  PLUGIN_NAME: obsidian-latex-math
+  PLUGIN_NAME: obsidian-latex-math-smart-solve
 
 jobs:
   run-tests:
@@ -122,12 +122,18 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           body: |
-            # Release ${{ github.ref_name}}
-            ## Usage
+            # Release ${{ github.ref_name }}
 
-            See [README](README.md) for usage.
-          draft: true
-          prerelease: false
+            Fork of [obsidian-latex-math](https://github.com/zarstensen/obsidian-latex-math) adding the **Smart Solve** dispatch — notebook-style implicit definitions, section-scoped contexts, constraint accumulation. See [design_docs.md](design_docs.md) for the full feature set.
+
+            ## Install via BRAT
+
+            1. Install [BRAT](https://obsidian.md/plugins?id=obsidian42-brat) in Obsidian.
+            2. Run the `BRAT: Add a beta plugin for testing` command.
+            3. Paste this repo's URL and pick the latest version (or this tag).
+            4. Bind `Alt+B` to **Smart Solve LaTeX expression** in Settings → Hotkeys.
+          draft: false
+          prerelease: true
           generate_release_notes: true
           files: |
             bundle-bin.zip

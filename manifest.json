@@ -1,10 +1,10 @@
 {
-	"id": "latex-math",
-	"name": "LaTeX Math",
-	"version": "1.4.2",
+	"id": "latex-math-smart-solve",
+	"name": "LaTeX Math (Smart Solve fork)",
+	"version": "1.5.0-beta.1",
 	"minAppVersion": "0.15.0",
-	"description": "Evaluate, solve and much more within LaTeX blocks using Sympy.",
-	"author": "Zarstensen",
-	"authorUrl": "https://github.com/zarstensen/",
+	"description": "Fork of LaTeX Math with notebook-style Smart Solve dispatch, section-scoped contexts, and implicit constraint accumulation.",
+	"author": "Albert Lin",
+	"authorUrl": "https://github.com/Albert-Lin",
 	"isDesktopOnly": true
 }
