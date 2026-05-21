@@ -12,9 +12,8 @@ dispatch and accumulate the resulting definitions.
 
 from collections import OrderedDict
 from dataclasses import dataclass
-from typing import Optional
 
-from sympy import Dummy, Eq, Expr, FiniteSet, S, Symbol, simplify, solveset, sympify
+from sympy import Dummy, FiniteSet, S, Symbol, simplify, solveset, sympify
 from sympy.core.function import AppliedUndef
 from sympy.core.relational import Equality, Relational
 
@@ -61,6 +60,7 @@ def _env_signature(env: LmatEnvironment) -> tuple:
 # Matches design_docs.md §"Reference Equations".
 def is_ref_block(latex: str) -> bool:
     import re
+
     return re.search(r"%\s*\\?text\{?\s*ref\b|%\s*ref\b", latex) is not None
 
 

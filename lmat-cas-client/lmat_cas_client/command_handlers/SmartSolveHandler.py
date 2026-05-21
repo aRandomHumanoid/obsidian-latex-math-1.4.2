@@ -38,8 +38,7 @@ class SmartSolveCommandResult(CommandResult):
         value = {
             "kind": self._result.kind,
             "toasts": [
-                {"severity": t.severity, "text": t.text}
-                for t in self._result.toasts
+                {"severity": t.severity, "text": t.text} for t in self._result.toasts
             ],
             "metadata": metadata,
         }

@@ -79,7 +79,9 @@ class TestSmartSolveBasic:
         }
         result = self._dispatch(r"x + y = 10", environment=env)
         assert result.kind == "silent"
-        assert any(t.severity == "error" and "Contradiction" in t.text for t in result.toasts)
+        assert any(
+            t.severity == "error" and "Contradiction" in t.text for t in result.toasts
+        )
 
     # --- Error cases ------------------------------------------------------
 
@@ -240,8 +242,12 @@ class TestSmartSolveContextReplay:
 
     compiler = LatexToSympyCompiler()
 
-    def _dispatch(self, expression: str, prior_blocks: list[str] | None = None,
-                  environment: dict | None = None):
+    def _dispatch(
+        self,
+        expression: str,
+        prior_blocks: list[str] | None = None,
+        environment: dict | None = None,
+    ):
         handler = SmartSolveHandler(self.compiler)
         return handler.handle({
             "expression": expression,
@@ -258,28 +264,37 @@ class TestSmartSolveContextReplay:
 
     def test_chain_of_implicit_definitions(self):
         # x = 3; y = x + 1; z = x + y → should derive z = 7.
-        result = self._dispatch(r"z = x + y", prior_blocks=[
-            r"x = 3",
-            r"y = x + 1",
-        ])
+        result = self._dispatch(
+            r"z = x + y",
+            prior_blocks=[
+                r"x = 3",
+                r"y = x + 1",
+            ],
+        )
         assert result.kind == "display"
         assert result.display_latex == "z = 7"
 
     def test_override_in_prior_blocks(self):
         # x = 3; x + 1 = 5 → overrides x to 4; eval x → 4
-        result = self._dispatch(r"x =", prior_blocks=[
-            r"x = 3",
-            r"x + 1 = 5",
-        ])
+        result = self._dispatch(
+            r"x =",
+            prior_blocks=[
+                r"x = 3",
+                r"x + 1 = 5",
+            ],
+        )
         assert result.kind == "display"
         assert result.display_latex == "4"
 
     def test_bad_prior_block_does_not_break_replay(self):
         # Garbage prior block is silently skipped; subsequent ones still apply.
-        result = self._dispatch(r"x + 1 =", prior_blocks=[
-            r"this is not latex \$\$",
-            r"x = 5",
-        ])
+        result = self._dispatch(
+            r"x + 1 =",
+            prior_blocks=[
+                r"this is not latex \$\$",
+                r"x = 5",
+            ],
+        )
         assert result.kind == "display"
         assert result.display_latex == "6"
 
@@ -343,41 +358,48 @@ class TestSmartSolveRenderer:
     from lmat_cas_client.smart_solve.Renderer import DEFAULT_SIG_FIGS, render
 
     def test_integer_unchanged(self):
-        from sympy import Integer
         from lmat_cas_client.smart_solve.Renderer import render
+        from sympy import Integer
+
         assert render(Integer(5)) == "5"
 
     def test_rational_one_third_rounded(self):
-        from sympy import Rational
         from lmat_cas_client.smart_solve.Renderer import render
+        from sympy import Rational
+
         assert render(Rational(1, 3)) == "0.333"
 
     def test_irrational_sqrt_2_rounded(self):
-        from sympy import sqrt
         from lmat_cas_client.smart_solve.Renderer import render
+        from sympy import sqrt
+
         assert render(sqrt(2)) == "1.41"
 
     def test_small_value_uses_scientific(self):
-        from sympy import Rational
         from lmat_cas_client.smart_solve.Renderer import render
+        from sympy import Rational
+
         # 1e-7 → scientific notation
         out = render(Rational(1, 10_000_000))
         assert "10^" in out
 
     def test_large_value_uses_scientific(self):
-        from sympy import Integer
         from lmat_cas_client.smart_solve.Renderer import render
+        from sympy import Integer
+
         out = render(Integer(123_456_789))
         assert "10^" in out
 
     def test_sig_figs_override(self):
-        from sympy import Rational
         from lmat_cas_client.smart_solve.Renderer import render
+        from sympy import Rational
+
         assert render(Rational(1, 3), sig_figs=5) == "0.33333"
 
     def test_symbolic_falls_back_to_latex_printer(self):
-        from sympy import Symbol
         from lmat_cas_client.smart_solve.Renderer import render
+        from sympy import Symbol
+
         # Symbolic results pass through the existing LaTeX printer (whatever it returns).
         x = Symbol("x")
         out = render(x + 1)

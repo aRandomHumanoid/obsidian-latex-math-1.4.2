@@ -12,32 +12,26 @@ Coverage:
   - Replay cache hit / invalidation.
 """
 
-from sympy import (
-    EmptySet,
-    FiniteSet,
-    I,
-    Integer,
-    Rational,
-    Symbol,
-    sqrt,
-    sympify,
-)
-
 from lmat_cas_client.command_handlers.SmartSolveHandler import SmartSolveHandler
 from lmat_cas_client.compiling.Compiler import LatexToSympyCompiler
 from lmat_cas_client.compiling.DefinitionStore import DefinitionStore
-from lmat_cas_client.LmatEnvironment import EnvDefinition, LmatEnvironment
+from lmat_cas_client.LmatEnvironment import LmatEnvironment
 from lmat_cas_client.smart_solve import ContextReplay, Tiebreaker
 from lmat_cas_client.smart_solve.ConstraintStore import (
     ConstraintStore,
     apply_determined,
 )
-from lmat_cas_client.smart_solve.Renderer import DEFAULT_SIG_FIGS, render
-
+from lmat_cas_client.smart_solve.Renderer import render
+from sympy import (
+    I,
+    Symbol,
+    sympify,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _dispatch(
     expression: str,
@@ -56,6 +50,7 @@ def _dispatch(
 # ---------------------------------------------------------------------------
 # Dispatcher edge cases
 # ---------------------------------------------------------------------------
+
 
 class TestSmartSolveEdgeCases:
     def test_multi_equation_align_block_returns_error(self):
@@ -91,6 +86,7 @@ class TestSmartSolveEdgeCases:
 # ---------------------------------------------------------------------------
 # Symbol assumptions and domains
 # ---------------------------------------------------------------------------
+
 
 class TestSmartSolveAssumptions:
     def test_positive_assumption_filters_negative_root(self):
@@ -128,6 +124,7 @@ class TestSmartSolveAssumptions:
 # ---------------------------------------------------------------------------
 # Chained definitions
 # ---------------------------------------------------------------------------
+
 
 class TestSmartSolveChainedDefinitions:
     def test_definition_value_references_another_definition(self):
@@ -173,12 +170,15 @@ class TestSmartSolveChainedDefinitions:
 # Override edge cases
 # ---------------------------------------------------------------------------
 
+
 class TestSmartSolveOverrideEdges:
     def test_override_equal_after_simplification(self):
         # Prior x = 6/2 should compare equal to new derivation x = 3.
         result = _dispatch(
             r"x + 1 = 4",
-            environment={"definitions": [{"name_expr": "x", "value_expr": r"\frac{6}{2}"}]},
+            environment={
+                "definitions": [{"name_expr": "x", "value_expr": r"\frac{6}{2}"}]
+            },
         )
         # Solving x + 1 = 4 → x = 3, which simplifies-equals prior 6/2.
         assert result.kind == "silent"
@@ -199,6 +199,7 @@ class TestSmartSolveOverrideEdges:
 # ---------------------------------------------------------------------------
 # Constraint accumulation edge cases
 # ---------------------------------------------------------------------------
+
 
 class TestSmartSolveConstraintEdges:
     def test_constraint_uses_existing_definition(self):
@@ -253,6 +254,7 @@ class TestSmartSolveConstraintEdges:
 # ConstraintStore unit tests
 # ---------------------------------------------------------------------------
 
+
 class TestConstraintStoreUnit:
     def test_empty_store_returns_empty(self):
         store = ConstraintStore()
@@ -297,6 +299,7 @@ class TestConstraintStoreUnit:
 # Tiebreaker unit tests
 # ---------------------------------------------------------------------------
 
+
 class TestTiebreakerUnit:
     def test_single_solution_no_choice(self):
         sel = Tiebreaker.select([sympify(5)], None)
@@ -332,6 +335,7 @@ class TestTiebreakerUnit:
 # Renderer edge cases
 # ---------------------------------------------------------------------------
 
+
 class TestRendererEdgeCases:
     def test_zero(self):
         assert render(sympify(0)) == "0"
@@ -361,17 +365,20 @@ class TestRendererEdgeCases:
 
     def test_pi_value_rendered(self):
         from sympy import pi
+
         out = render(pi)
         assert out.startswith("3.14")
 
     def test_infinity_falls_back_to_latex(self):
         from sympy import oo
+
         # Symbolic infinity passes through the existing printer.
         out = render(oo)
         assert "infty" in out or "oo" in out
 
     def test_symbolic_matrix_falls_back(self):
         from sympy import Matrix
+
         out = render(Matrix([[1, 2], [3, 4]]))
         # Matrix rendering uses LaTeX matrix env.
         assert "matrix" in out or "&" in out
@@ -380,6 +387,7 @@ class TestRendererEdgeCases:
 # ---------------------------------------------------------------------------
 # Replay cache behavior
 # ---------------------------------------------------------------------------
+
 
 class TestReplayCache:
     def test_cache_hit_returns_equivalent_result(self):
@@ -391,7 +399,6 @@ class TestReplayCache:
         r2 = ContextReplay.replay_blocks([r"x = 3", r"y = x + 1"], env, compiler)
 
         # Definitions equivalent: both should resolve y to 4.
-        from lmat_cas_client.compiling.Definitions import SympyDefinition
         for store in (r1.def_store, r2.def_store):
             defn = store.get_definition("y")
             assert defn is not None
@@ -416,6 +423,7 @@ class TestReplayCache:
         r1 = ContextReplay.replay_blocks([r"x = 3"], env, compiler)
         # Mutating r1's store must not poison the cached entry for the next call.
         from lmat_cas_client.compiling.Definitions import SympyDefinition
+
         r1.def_store.set_definition("z", SympyDefinition(sympify(99)))
 
         r2 = ContextReplay.replay_blocks([r"x = 3"], env, compiler)
@@ -439,6 +447,7 @@ class TestReplayCache:
 # ---------------------------------------------------------------------------
 # %ref edge cases
 # ---------------------------------------------------------------------------
+
 
 class TestRefEdgeCases:
     def test_ref_with_text_block_format(self):
@@ -474,6 +483,7 @@ class TestRefEdgeCases:
 # ---------------------------------------------------------------------------
 # Trailing equals with side effects
 # ---------------------------------------------------------------------------
+
 
 class TestTrailingEqualsEdges:
     def test_trailing_equals_on_undefined_variable_errors(self):

@@ -289,7 +289,8 @@ class BuiltInFunctionsTransformer(UndefinedAtomsTransformer):
     def exp_transpose(self, mat: Expr, exponent: Token) -> Expr:
         exponents_str = exponent.value
         exponents_str = (
-            exponents_str.replace("{", "")
+            exponents_str
+            .replace("{", "")
             .replace("}", "")
             .replace("\\ast", "H")
             .replace("*", "H")

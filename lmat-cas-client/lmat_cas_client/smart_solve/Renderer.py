@@ -8,7 +8,6 @@ LmatLatexPrinter.
 """
 
 import math
-from typing import Optional
 
 from sympy import Expr, N, nan, oo, zoo
 
@@ -73,7 +72,7 @@ def _format_number(value: float, sig_figs: int) -> str:
 
 def _format_scientific(value: float, sig_figs: int) -> str:
     exponent = int(math.floor(math.log10(abs(value))))
-    mantissa = value / (10 ** exponent)
+    mantissa = value / (10**exponent)
     mantissa_str = _format_fixed(mantissa, sig_figs)
     return f"{mantissa_str} \\times 10^{{{exponent}}}"
 

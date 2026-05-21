@@ -4,7 +4,6 @@ from typing import Optional
 
 from sympy import (
     Dummy,
-    Eq,
     Expr,
     FiniteSet,
     S,
@@ -15,7 +14,7 @@ from sympy import (
 )
 from sympy.core.function import AppliedUndef
 from sympy.core.relational import Equality, Relational
-from sympy.logic.boolalg import BooleanAtom, BooleanFalse, BooleanTrue
+from sympy.logic.boolalg import BooleanAtom, BooleanTrue
 from sympy.physics.units.unitsystem import UnitSystem
 
 import lmat_cas_client.math_lib.units.UnitUtils as UnitUtils
@@ -27,8 +26,8 @@ from lmat_cas_client.LmatLatexPrinter import lmat_latex
 from lmat_cas_client.smart_solve import Tiebreaker
 from lmat_cas_client.smart_solve.Renderer import DEFAULT_SIG_FIGS, render
 
-
 # --- Result envelope -------------------------------------------------------
+
 
 @dataclass
 class Toast:
@@ -49,7 +48,9 @@ class DispatchResult:
 
 
 def _display(latex: str, toasts: list[Toast] | None = None) -> DispatchResult:
-    return DispatchResult(kind="display", display_latex=latex, toasts=list(toasts or []))
+    return DispatchResult(
+        kind="display", display_latex=latex, toasts=list(toasts or [])
+    )
 
 
 def _silent(toasts: list[Toast] | None = None) -> DispatchResult:
@@ -369,7 +370,9 @@ class SmartSolveDispatcher:
 
         # Empty solution set — check this first so the cross-domain hint fires
         # before falling into non-FiniteSet handling.
-        if solutions == S.EmptySet or (isinstance(solutions, FiniteSet) and len(solutions) == 0):
+        if solutions == S.EmptySet or (
+            isinstance(solutions, FiniteSet) and len(solutions) == 0
+        ):
             extra: list[Toast] = []
             if domain == S.Reals:
                 try:
@@ -377,7 +380,8 @@ class SmartSolveDispatcher:
                     has_complex = (
                         isinstance(complex_sols, FiniteSet) and len(complex_sols) > 0
                     ) or (
-                        not isinstance(complex_sols, FiniteSet) and complex_sols != S.EmptySet
+                        not isinstance(complex_sols, FiniteSet)
+                        and complex_sols != S.EmptySet
                     )
                     if has_complex:
                         extra.append(
@@ -402,7 +406,9 @@ class SmartSolveDispatcher:
                     Toast("warning", f"Solution set: {lmat_latex(solutions)}"),
                 ])
             value = _auto_convert(simplify(first), environment)
-            return self._finish_single_solve(target, value, prior_value, toasts=[], sig_figs=sig_figs)
+            return self._finish_single_solve(
+                target, value, prior_value, toasts=[], sig_figs=sig_figs
+            )
 
         if len(solutions) == 0:
             # Cross-domain hint (design_docs §"Domain Setting").
@@ -425,9 +431,7 @@ class SmartSolveDispatcher:
             base.toasts.extend(extra)
             return base
 
-        candidates = [
-            _auto_convert(simplify(s), environment) for s in solutions.args
-        ]
+        candidates = [_auto_convert(simplify(s), environment) for s in solutions.args]
 
         # Apply the target symbol's declared assumptions as a post-filter.
         # sympy's solveset doesn't do this automatically, so a `positive` symbol
