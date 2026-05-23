@@ -4,7 +4,8 @@ import { LatexMathCommand } from "./LatexMathCommand";
 import { SectionContextBuilder } from "/models/cas/SectionContextBuilder";
 import { formatLatex } from "/utils/LatexFormatter";
 import { iterateMathBlocks } from "/utils/MathBlockIterator";
-import { RESULT_MARKER, splitSource, stripResult } from "/utils/ResultMarker";
+import { resolveMarker, splitSource, stripResult } from "/utils/ResultMarker";
+import { SuccessResponseVerifier } from "/services/ResponseVerifier";
 import {
     PriorBlock,
     SmartSolveArgsPayload,
@@ -19,13 +20,23 @@ interface BlockUpdate {
     new_text: string;
 }
 
-// Cap on how many individual toasts to surface per run before we collapse
-// the remainder into a single "and N more" notice. Document-wide runs can
-// emit a lot of notices and Obsidian stacks them in the corner.
+// Cap on individual toasts per run before we collapse the remainder into a
+// single rollup notice. Document-wide runs can emit a lot, and Obsidian
+// stacks every notice in the corner.
 const MAX_TOASTS_PER_RUN = 5;
 
 export class SmartSolveCommand extends LatexMathCommand {
     readonly id = "smart-solve-latex-expression";
+
+    constructor(
+        response_verifier: SuccessResponseVerifier,
+        // Resolved lazily on each press so settings changes take effect without
+        // re-registering the command. Returns the user's configured marker
+        // LaTeX; if blank/undefined it falls back to the default \Rightarrow.
+        private readonly getMarker: () => string,
+    ) {
+        super(response_verifier);
+    }
 
     // Monotonic counter incremented on each press. The async loop checks this
     // between iterations so a re-press abandons the in-flight run instead of
@@ -44,11 +55,13 @@ export class SmartSolveCommand extends LatexMathCommand {
             return;
         }
 
-        // Out-of-block press = refresh-only mode: don't add `⇒` markers to
-        // blocks that don't already have one. Pressing inside a block opts that
-        // block into the "add a marker if displayable" path while still
-        // refreshing existing markers everywhere else.
+        // Out-of-block press = refresh-only: don't add `⇒` markers to blocks
+        // that don't already have one. But we still dispatch every block to
+        // CAS, because override warnings, contradiction errors, and other
+        // toasts only fire from the dispatcher — short-circuiting before the
+        // round-trip would silently swallow them.
         const cursor_offset = editor.posToOffset(editor.getCursor());
+        const marker = resolveMarker(this.getMarker());
 
         const updates: BlockUpdate[] = [];
         const all_toasts: SmartSolveToast[] = [];
@@ -56,26 +69,19 @@ export class SmartSolveCommand extends LatexMathCommand {
         let error_count = 0;
 
         for (const block of all_blocks) {
-            // Bail if a newer press has taken over.
             if (this.current_run_id !== this_run_id) return;
 
             const split = splitSource(block.contents);
             const source_trimmed = split.source.trim();
             const is_cursor_block = cursor_offset >= block.from && cursor_offset <= block.to;
 
-            // Skip blocks that are empty after stripping any prior result.
             if (source_trimmed === "") continue;
 
-            // Out-of-block press on a block with no existing marker → don't
-            // even ask the backend. Avoids needless CAS round-trips and toasts
-            // for definitions/fresh equations the user didn't opt in to.
-            if (!is_cursor_block && !split.has_marker) continue;
-
+            // Always dispatch — we need the toasts even on blocks we won't write to.
             const context = SectionContextBuilder.build(app, view, editor.offsetToPos(block.from));
             const prior_blocks: PriorBlock[] = context.prior_blocks.map(b => ({
                 contents: stripResult(b.contents),
             }));
-
             const payload = new SmartSolveArgsPayload(source_trimmed, context.environment, prior_blocks);
 
             let result: SmartSolveResponse;
@@ -90,34 +96,49 @@ export class SmartSolveCommand extends LatexMathCommand {
 
             all_toasts.push(...(result.toasts ?? []));
 
-            // Preserve the user's original delimiter style: `$$...$$` (display,
-            // possibly fenced across newlines) vs. `$...$` (inline, single-line).
+            // Whether we're allowed to commit a *new* marker to this block.
+            // Refresh-only blocks (outside cursor + no existing marker) get the
+            // toasts but don't have their text rewritten.
+            const may_write_marker = is_cursor_block || split.has_marker;
+
+            // Preserve the user's delimiter flavor: `$$...$$` (possibly fenced)
+            // vs. `$...$` (inline, single-line).
             const original_raw = editor.getRange(editor.offsetToPos(block.from), editor.offsetToPos(block.to));
             const is_display = original_raw.startsWith("$$");
-            const is_multiline = is_display && /\n/.test(original_raw);
 
             let new_inner: string | null = null;
+            let force_multiline = false;
 
-            if (result.kind === "display" && result.display_latex !== undefined) {
+            if (result.kind === "display" && result.display_latex !== undefined && may_write_marker) {
                 const formatted = await formatLatex(result.display_latex);
-                let body = `${source_trimmed} ${RESULT_MARKER} ${formatted}`;
-                // Inline math cannot contain newlines; flatten the result body.
-                if (!is_multiline) body = body.replaceAll('\n', ' ');
-                new_inner = body;
-                display_count++;
-            } else if (result.kind === "silent") {
-                // Strip any stale result marker so silent dispatches (definitions,
-                // verified equalities) don't leave a now-irrelevant `⇒ ...` tail.
-                if (block.contents !== source_trimmed) {
-                    new_inner = source_trimmed;
+
+                // Pressing inside a `$$...$$` block promotes single-line to
+                // multi-line so the result lands on its own line. Refreshing
+                // an existing marker keeps the block's current flavor.
+                if (is_cursor_block && is_display) {
+                    force_multiline = true;
                 }
+
+                const will_be_multiline = is_display && (force_multiline || /\n/.test(original_raw));
+
+                if (will_be_multiline) {
+                    new_inner = `${source_trimmed}\n${marker} ${formatted.replaceAll("\n", " ")}`;
+                } else {
+                    new_inner = `${source_trimmed} ${marker} ${formatted}`.replaceAll('\n', ' ');
+                }
+                display_count++;
+            } else if (result.kind === "silent" && split.has_marker) {
+                // Stale result on a now-silent block (e.g., a verified equality
+                // or a definition that previously rendered a value): strip it.
+                new_inner = source_trimmed;
             }
             // no_op leaves the block untouched.
 
             if (new_inner !== null) {
                 let new_text: string;
                 if (is_display) {
-                    new_text = is_multiline ? `$$\n${new_inner}\n$$` : `$$${new_inner}$$`;
+                    const will_be_multiline = force_multiline || /\n/.test(original_raw);
+                    new_text = will_be_multiline ? `$$\n${new_inner}\n$$` : `$$${new_inner}$$`;
                 } else {
                     new_text = `$${new_inner}$`;
                 }
@@ -140,7 +161,8 @@ export class SmartSolveCommand extends LatexMathCommand {
             this.showToast(toast);
         }
         if (all_toasts.length > MAX_TOASTS_PER_RUN) {
-            new Notice(`...and ${all_toasts.length - MAX_TOASTS_PER_RUN} more notice${all_toasts.length - MAX_TOASTS_PER_RUN === 1 ? '' : 's'}`);
+            const extra = all_toasts.length - MAX_TOASTS_PER_RUN;
+            new Notice(`...and ${extra} more notice${extra === 1 ? '' : 's'}`);
         }
 
         const summary_parts = [`Re-evaluated ${display_count}/${all_blocks.length} block${all_blocks.length === 1 ? '' : 's'}`];

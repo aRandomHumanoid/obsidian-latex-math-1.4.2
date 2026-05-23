@@ -8,6 +8,9 @@ from sympy import (
     FiniteSet,
     S,
     Symbol,
+    Tuple,
+    linsolve,
+    nonlinsolve,
     simplify,
     solveset,
     sympify,
@@ -16,6 +19,7 @@ from sympy.core.function import AppliedUndef
 from sympy.core.relational import Equality, Relational
 from sympy.logic.boolalg import BooleanAtom, BooleanTrue
 from sympy.physics.units.unitsystem import UnitSystem
+from sympy.solvers.solveset import NonlinearError
 
 import lmat_cas_client.math_lib.units.UnitUtils as UnitUtils
 from lmat_cas_client.compiling.Compiler import LatexToSympyCompiler
@@ -180,6 +184,97 @@ def _values_equal(a: Expr, b: Expr) -> bool:
     return diff == 0
 
 
+def _try_resolve_via_constraints(
+    expr: Expr,
+    constraints,  # ConstraintStore
+    def_store: DefinitionStore,
+) -> Optional[Expr]:
+    """
+    Attempt to express `expr` using the accumulated constraint system.
+
+    When the user evaluates a symbol that has no concrete definition but
+    appears in a constraint (e.g. `x = y + z` with `y = 3z + 5` and the user
+    asks for `x`), we solve the system over all constraint variables and
+    substitute the matching solutions back into the expression. The result
+    may still contain free parameters (here, `z`) — that's the symbolic
+    answer the user wants instead of an "undefined variable" error.
+
+    Returns the substituted/simplified expression, or `None` if no useful
+    progress was made (no constraints, solver failure, etc.).
+    """
+    if not getattr(constraints, "constraints", None):
+        return None
+
+    # Materialize any definitions already in the store before solving — this
+    # mirrors ConstraintStore.solve_and_materialize's behavior so we don't
+    # re-derive what's already known.
+    substituted_constraints: list[Expr] = []
+    for c in constraints.constraints:
+        sc = c
+        for sym in list(sc.free_symbols):
+            defn = def_store.get_definition(sym.name)
+            if defn is None:
+                continue
+            try:
+                value = defn.defined_value(def_store)
+            except Exception:
+                continue
+            try:
+                sc = sc.subs(sym, value)
+            except Exception:
+                continue
+        substituted_constraints.append(sc)
+
+    all_constraint_syms: set[Symbol] = set()
+    for c in substituted_constraints:
+        all_constraint_syms |= c.free_symbols
+    if not all_constraint_syms:
+        return None
+
+    ordered = sorted(all_constraint_syms, key=lambda s: s.name)
+
+    try:
+        sols = linsolve(substituted_constraints, ordered)
+    except NonlinearError:
+        try:
+            sols = nonlinsolve(substituted_constraints, ordered)
+        except Exception:
+            return None
+    except Exception:
+        return None
+
+    if not isinstance(sols, FiniteSet) or len(sols) == 0:
+        return None
+
+    first = next(iter(sols))
+    if isinstance(first, (tuple, Tuple)):
+        first = tuple(first)
+    else:
+        first = (first,)
+
+    sub_dict: dict[Symbol, Expr] = {}
+    for sym, value in zip(ordered, first):
+        # linsolve returns the symbol itself when underdetermined — that's a
+        # parametric leave-it-free, not a substitution.
+        if value == sym:
+            continue
+        sub_dict[sym] = value
+
+    if not sub_dict:
+        return None
+
+    try:
+        new_expr = expr.subs(sub_dict)
+    except Exception:
+        return None
+
+    try:
+        new_expr = simplify(new_expr)
+    except Exception:
+        pass
+    return new_expr
+
+
 # --- Top-level dispatch ----------------------------------------------------
 
 
@@ -241,7 +336,7 @@ class SmartSolveDispatcher:
         if isinstance(expr, Relational):
             return self._dispatch_relation(expr, full_store, constraints, environment)
 
-        return self._dispatch_expression(expr, full_store, environment)
+        return self._dispatch_expression(expr, full_store, constraints, environment)
 
     # --- Relation cases ---------------------------------------------------
 
@@ -262,7 +357,9 @@ class SmartSolveDispatcher:
 
         # Trailing-`=` blocks parse as Eq(lhs, Dummy()). Treat as evaluation of lhs.
         if isinstance(expr, Equality) and isinstance(rhs, Dummy):
-            return self._dispatch_expression(expr.lhs, def_store, environment)
+            return self._dispatch_expression(
+                expr.lhs, def_store, constraints, environment
+            )
 
         syntactic_vars: set[Symbol] = set(expr.free_symbols)
 
@@ -488,6 +585,7 @@ class SmartSolveDispatcher:
         self,
         expr: Expr,
         def_store: DefinitionStore,
+        constraints,  # ConstraintStore — positional to keep the import in handle()
         environment: LmatEnvironment,
     ) -> DispatchResult:
         # Substitute all definitions, then evaluate.
@@ -498,10 +596,31 @@ class SmartSolveDispatcher:
         except Exception as e:
             return _error(f"Evaluation failed: {e}")
 
-        unresolved = {s for s in result.free_symbols if not isinstance(s, Dummy)}
-        if unresolved:
-            var_list = ", ".join(sorted(str(s) for s in unresolved))
-            return _error(f"Undefined variable(s): {var_list}.")
-
         sig_figs = _resolve_sig_figs(environment)
-        return _display(render(result, sig_figs))
+        unresolved = {s for s in result.free_symbols if not isinstance(s, Dummy)}
+
+        if not unresolved:
+            return _display(render(result, sig_figs))
+
+        # Symbolic fallback: if the accumulated constraints over-determine some
+        # of the unresolved symbols, substitute them in. The expression may
+        # still have free parameters — that's fine, we surface them so the user
+        # knows it's a symbolic answer rather than a numeric one.
+        resolved = _try_resolve_via_constraints(result, constraints, def_store)
+        if resolved is not None and resolved != result:
+            still_unresolved = {
+                s for s in resolved.free_symbols if not isinstance(s, Dummy)
+            }
+            toasts: list[Toast] = []
+            if still_unresolved:
+                free_list = ", ".join(sorted(str(s) for s in still_unresolved))
+                toasts.append(
+                    Toast(
+                        "info",
+                        f"Symbolic result (free parameters: {free_list}).",
+                    )
+                )
+            return _display(render(resolved, sig_figs), toasts)
+
+        var_list = ", ".join(sorted(str(s) for s in unresolved))
+        return _error(f"Undefined variable(s): {var_list}.")

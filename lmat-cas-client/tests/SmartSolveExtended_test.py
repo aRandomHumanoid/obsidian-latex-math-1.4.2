@@ -507,3 +507,43 @@ class TestTrailingEqualsEdges:
         )
         assert result.kind == "display"
         assert result.display_latex == "6"
+
+
+class TestSymbolicFallback:
+    """Evaluating an expression whose variables can only be expressed in
+    terms of remaining free parameters should return a symbolic answer
+    instead of an 'undefined variable' error."""
+
+    def test_simple_symbolic_substitution(self):
+        # x = y + z; y = 3z + 5; evaluate x → 4z + 5 (free parameter z).
+        result = _dispatch(
+            r"x",
+            prior_blocks=[r"x = y + z", r"y = 3z + 5"],
+        )
+        assert result.kind == "display", (
+            f"expected display, got {result.kind} with toasts={result.toasts}"
+        )
+        # Symbolic form: 4*z + 5, however lmat_latex chooses to render.
+        assert "z" in result.display_latex
+        assert "5" in result.display_latex
+        # An info toast announces the symbolic-with-free-parameter result.
+        assert any(t.severity == "info" and "Symbolic" in t.text for t in result.toasts)
+
+    def test_no_constraints_still_errors(self):
+        # No prior context; bare `x` is genuinely undefined.
+        result = _dispatch(r"x")
+        assert result.kind == "silent"
+        assert any(
+            t.severity == "error" and "Undefined" in t.text for t in result.toasts
+        )
+
+    def test_constraint_pins_to_numeric(self):
+        # When constraints uniquely determine the value, prefer the numeric
+        # answer (no "Symbolic" toast since there are no free parameters left).
+        result = _dispatch(
+            r"x",
+            prior_blocks=[r"x + y = 10", r"x - y = 2"],
+        )
+        assert result.kind == "display"
+        assert result.display_latex == "6"
+        assert not any("Symbolic" in t.text for t in result.toasts)

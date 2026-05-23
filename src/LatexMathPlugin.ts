@@ -21,13 +21,20 @@ import { TruthTableFormat } from '/models/cas/messages/TruthTableMessage';
 import { CasCommandRequester } from './services/CasCommandRequester';
 import { SymbolSetMessage } from './models/cas/messages/SymbolSetsMessage';
 import { mathjaxLoadLatexPackages } from './utils/MathJaxPackageLoader';
+import { DEFAULT_RESULT_MARKER } from '/utils/ResultMarker';
 
-interface LatexMathPluginSettings {
+export interface LatexMathPluginSettings {
     dev_mode: boolean;
+    // LaTeX inserted between source and result when Smart Solve writes a
+    // display result. Detection during refresh is independent and recognizes
+    // common arrow markers regardless of this value, so changing it does not
+    // strand markers in existing notes.
+    smart_solve_result_marker: string;
 }
 
 const DEFAULT_SETTINGS: LatexMathPluginSettings = {
-    dev_mode: false
+    dev_mode: false,
+    smart_solve_result_marker: DEFAULT_RESULT_MARKER,
 };
 
 export default class LatexMathPlugin extends Plugin {
@@ -67,7 +74,7 @@ export default class LatexMathPlugin extends Plugin {
             [new EvaluateCommand(EvaluateMode.EXPAND, response_verifier), 'Expand LaTeX expression'],
             [new EvaluateCommand(EvaluateMode.FACTOR, response_verifier), 'Factor LaTeX expression'],
             [new EvaluateCommand(EvaluateMode.APART, response_verifier), 'Partial fraction decompose LaTeX expression'],
-            [new SmartSolveCommand(response_verifier), 'Smart Solve LaTeX expression'],
+            [new SmartSolveCommand(response_verifier, () => this.settings.smart_solve_result_marker), 'Smart Solve LaTeX expression'],
             [new SolveCommand(response_verifier), 'Solve LaTeX expression'],
             [new ConvertSympyCommand(response_verifier), 'Convert LaTeX expression to Sympy'],
             [new UnitConvertCommand(response_verifier), 'Convert units in LaTeX expression'],

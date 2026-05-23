@@ -1,5 +1,7 @@
 import { describe, expect, test } from "vitest";
-import { RESULT_MARKER, splitSource, stripResult } from "/utils/ResultMarker";
+import { DEFAULT_RESULT_MARKER, resolveMarker, splitSource, stripResult } from "/utils/ResultMarker";
+
+const RESULT_MARKER = DEFAULT_RESULT_MARKER;
 
 describe("ResultMarker", () => {
     test("no marker present: returns full input as source", () => {
@@ -62,5 +64,33 @@ describe("ResultMarker", () => {
         expect(result.has_marker).toBe(true);
         expect(result.source).toContain("\\begin{align}");
         expect(result.source).toContain("\\end{align}");
+    });
+
+    test("legacy `\\quad \\Rightarrow \\quad` markers still split", () => {
+        // Notes written under v1.5.0/1.5.1 used quads on both sides. Refresh
+        // must still find them after the v1.5.3 default switched to plain.
+        const contents = "x = 5 \\quad \\Rightarrow \\quad 5";
+        const result = splitSource(contents);
+        expect(result.has_marker).toBe(true);
+        expect(result.source).toBe("x = 5");
+    });
+
+    test("alternative arrow markers (\\to, \\implies) split too", () => {
+        for (const arrow of ["\\to", "\\implies", "\\rightarrow", "\\Longrightarrow"]) {
+            const r = splitSource(`a ${arrow} b`);
+            expect(r.has_marker, `arrow=${arrow}`).toBe(true);
+            expect(r.source, `arrow=${arrow}`).toBe("a");
+        }
+    });
+
+    test("resolveMarker: empty/undefined falls back to default", () => {
+        expect(resolveMarker(undefined)).toBe(DEFAULT_RESULT_MARKER);
+        expect(resolveMarker("")).toBe(DEFAULT_RESULT_MARKER);
+        expect(resolveMarker("   ")).toBe(DEFAULT_RESULT_MARKER);
+    });
+
+    test("resolveMarker: passes through configured value, trimmed", () => {
+        expect(resolveMarker("\\to")).toBe("\\to");
+        expect(resolveMarker("  \\implies  ")).toBe("\\implies");
     });
 });
