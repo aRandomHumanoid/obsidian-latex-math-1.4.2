@@ -21,6 +21,16 @@ class TestEvaluate:
 
         assert result.sympy_expr == 2
 
+    def test_trailing_equals_falls_back_to_lhs(self):
+        # `$z=$` compiles to Eq(z, Dummy()); eval must not leak the Dummy.
+        handler = EvalHandler(self.compiler)
+
+        result = handler.handle({"expression": "z=", "environment": {}})
+
+        z = Symbol("z")
+        assert result.sympy_expr == z
+        assert not result.sympy_expr.atoms(Dummy)
+
     def test_escaped_spaces(self):
         handler = EvalHandler(self.compiler)
 

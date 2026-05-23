@@ -22,11 +22,43 @@ describe("MathBlockIterator", () => {
         expect(blocks[0].contents).toBe("x = 3");
     });
 
-    test("ignores inline $...$ blocks", () => {
-        const text = "this $x$ is inline and $$y = 5$$ is block";
+    test("picks up inline $...$ alongside $$...$$", () => {
+        const text = "inline $x = 3$ and display $$y = 5$$ both";
+        const blocks = iterateMathBlocks(text);
+        expect(blocks).toHaveLength(2);
+        expect(blocks[0].contents).toBe("x = 3");
+        expect(blocks[1].contents).toBe("y = 5");
+    });
+
+    test("inline math: from/to span the $...$ delimiters", () => {
+        const text = "before $x + 1$ after";
         const blocks = iterateMathBlocks(text);
         expect(blocks).toHaveLength(1);
-        expect(blocks[0].contents).toBe("y = 5");
+        const slice = text.slice(blocks[0].from, blocks[0].to);
+        expect(slice).toBe("$x + 1$");
+    });
+
+    test("inline math does not span newlines", () => {
+        // A `$` opener with no closer on the same line should not match
+        // through a newline — otherwise stray dollar signs in prose would
+        // accidentally wrap large chunks of the document as math.
+        const text = "this $ opens\nbut never closes $ on the next line";
+        const blocks = iterateMathBlocks(text);
+        expect(blocks).toHaveLength(0);
+    });
+
+    test("escaped \\$ inside inline math is not the closer", () => {
+        const text = "$a \\$ b$";
+        const blocks = iterateMathBlocks(text);
+        expect(blocks).toHaveLength(1);
+        expect(blocks[0].contents).toBe("a \\$ b");
+    });
+
+    test("adjacent inline blocks are both captured", () => {
+        const text = "$x = 1$ and $y = 2$";
+        const blocks = iterateMathBlocks(text);
+        expect(blocks).toHaveLength(2);
+        expect(blocks.map(b => b.contents)).toEqual(["x = 1", "y = 2"]);
     });
 
     test("applies base_offset to the from/to positions", () => {

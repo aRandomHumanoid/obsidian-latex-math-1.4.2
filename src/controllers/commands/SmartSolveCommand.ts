@@ -1,9 +1,9 @@
-import { App, Editor, EditorPosition, MarkdownView, Notice } from "obsidian";
-import { CasServer, InterruptHandlerMessage } from "/services/CasServer";
+import { App, Editor, MarkdownView, Notice } from "obsidian";
+import { CasServer } from "/services/CasServer";
 import { LatexMathCommand } from "./LatexMathCommand";
-import { EquationExtractor } from "/utils/EquationExtractor";
 import { SectionContextBuilder } from "/models/cas/SectionContextBuilder";
 import { formatLatex } from "/utils/LatexFormatter";
+import { iterateMathBlocks } from "/utils/MathBlockIterator";
 import { RESULT_MARKER, splitSource, stripResult } from "/utils/ResultMarker";
 import {
     PriorBlock,
@@ -13,120 +13,130 @@ import {
     SmartSolveToast,
 } from "/models/cas/messages/SmartSolveMessage";
 
-type Expression = {
+interface BlockUpdate {
     from: number;
     to: number;
-    contents: string;
-    is_multiline: boolean;
-};
+    new_text: string;
+}
+
+// Cap on how many individual toasts to surface per run before we collapse
+// the remainder into a single "and N more" notice. Document-wide runs can
+// emit a lot of notices and Obsidian stacks them in the corner.
+const MAX_TOASTS_PER_RUN = 5;
 
 export class SmartSolveCommand extends LatexMathCommand {
     readonly id = "smart-solve-latex-expression";
 
-    // Track the most recent in-flight uid so a subsequent press can cancel it
-    // (design_docs.md §"Timeouts and Cancellation").
-    private in_flight_uid: string | null = null;
+    // Monotonic counter incremented on each press. The async loop checks this
+    // between iterations so a re-press abandons the in-flight run instead of
+    // racing two sets of edits into the same document.
+    private current_run_id = 0;
 
     public async functionCallback(cas_server: CasServer, app: App, editor: Editor, view: MarkdownView): Promise<void> {
-        const expression = this.getExpression(editor);
+        this.current_run_id += 1;
+        const this_run_id = this.current_run_id;
 
-        if (expression === null) {
-            new Notice("You are not inside a math block");
+        const doc_text = editor.getValue();
+        const all_blocks = iterateMathBlocks(doc_text);
+
+        if (all_blocks.length === 0) {
+            new Notice("No math blocks in document");
             return;
         }
 
-        // Strip any existing inline result so the backend sees only the user's source.
-        const { source } = splitSource(expression.contents);
+        const updates: BlockUpdate[] = [];
+        const all_toasts: SmartSolveToast[] = [];
+        let display_count = 0;
+        let error_count = 0;
 
-        const context = SectionContextBuilder.build(app, view);
+        for (const block of all_blocks) {
+            // Bail if a newer press has taken over.
+            if (this.current_run_id !== this_run_id) return;
 
-        const prior_blocks: PriorBlock[] = context.prior_blocks.map(b => ({
-            contents: stripResult(b.contents),
-        }));
+            const { source } = splitSource(block.contents);
+            const source_trimmed = source.trim();
 
-        const payload = new SmartSolveArgsPayload(source, context.environment, prior_blocks);
+            // Skip blocks that are empty after stripping any prior result.
+            if (source_trimmed === "") continue;
 
-        // If a previous Smart Solve press is still pending, interrupt it before
-        // launching the new one so the user doesn't get stale results.
-        if (this.in_flight_uid !== null) {
+            const context = SectionContextBuilder.build(app, view, editor.offsetToPos(block.from));
+            const prior_blocks: PriorBlock[] = context.prior_blocks.map(b => ({
+                contents: stripResult(b.contents),
+            }));
+
+            const payload = new SmartSolveArgsPayload(source_trimmed, context.environment, prior_blocks);
+
+            let result: SmartSolveResponse;
             try {
-                cas_server.send(new InterruptHandlerMessage({ target_uids: [this.in_flight_uid] }));
+                const response = await cas_server.send(new SmartSolveMessage(payload)).response;
+                result = this.response_verifier.verifyResponse<SmartSolveResponse>(response);
             } catch (e) {
-                // Best-effort cancellation; ignore failures (the original might have
-                // already completed between the press and this call).
-                void e;
+                error_count++;
+                new Notice(`Smart Solve error on block: ${e instanceof Error ? e.message : String(e)}`, 8000);
+                continue;
+            }
+
+            all_toasts.push(...(result.toasts ?? []));
+
+            // Preserve the user's original delimiter style: `$$...$$` (display,
+            // possibly fenced across newlines) vs. `$...$` (inline, single-line).
+            const original_raw = editor.getRange(editor.offsetToPos(block.from), editor.offsetToPos(block.to));
+            const is_display = original_raw.startsWith("$$");
+            const is_multiline = is_display && /\n/.test(original_raw);
+
+            let new_inner: string | null = null;
+
+            if (result.kind === "display" && result.display_latex !== undefined) {
+                const formatted = await formatLatex(result.display_latex);
+                let body = `${source_trimmed} ${RESULT_MARKER} ${formatted}`;
+                // Inline math cannot contain newlines; flatten the result body.
+                if (!is_multiline) body = body.replaceAll('\n', ' ');
+                new_inner = body;
+                display_count++;
+            } else if (result.kind === "silent") {
+                // Strip any stale result marker so silent dispatches (definitions,
+                // verified equalities) don't leave a now-irrelevant `⇒ ...` tail.
+                if (block.contents !== source_trimmed) {
+                    new_inner = source_trimmed;
+                }
+            }
+            // no_op leaves the block untouched.
+
+            if (new_inner !== null) {
+                let new_text: string;
+                if (is_display) {
+                    new_text = is_multiline ? `$$\n${new_inner}\n$$` : `$$${new_inner}$$`;
+                } else {
+                    new_text = `$${new_inner}$`;
+                }
+                if (new_text !== original_raw) {
+                    updates.push({ from: block.from, to: block.to, new_text });
+                }
             }
         }
 
-        const sent = cas_server.send(new SmartSolveMessage(payload));
-        this.in_flight_uid = sent.uid;
+        if (this.current_run_id !== this_run_id) return;
 
-        let response;
-        try {
-            response = await sent.response;
-        } finally {
-            // Only clear if no newer press has overwritten this in-flight slot.
-            if (this.in_flight_uid === sent.uid) {
-                this.in_flight_uid = null;
-            }
+        // Apply edits back-to-front so each earlier replacement doesn't shift
+        // the offsets of replacements we haven't applied yet.
+        for (let i = updates.length - 1; i >= 0; i--) {
+            const u = updates[i];
+            editor.replaceRange(u.new_text, editor.offsetToPos(u.from), editor.offsetToPos(u.to));
         }
-        const result = this.response_verifier.verifyResponse<SmartSolveResponse>(response);
 
-        for (const toast of result.toasts ?? []) {
+        for (const toast of all_toasts.slice(0, MAX_TOASTS_PER_RUN)) {
             this.showToast(toast);
         }
-
-        if (result.kind === "display" && result.display_latex !== undefined) {
-            await this.insertOrReplaceResult(editor, expression, source, result);
-        }
-    }
-
-    private getExpression(editor: Editor): Expression | null {
-        const expression = EquationExtractor.extractEquation(editor.posToOffset(editor.getCursor()), editor);
-
-        if (expression === null) return null;
-
-        if (editor.getSelection().length > 0) {
-            return {
-                from: editor.posToOffset(editor.getCursor('from')),
-                to: editor.posToOffset(editor.getCursor('to')),
-                contents: editor.getSelection(),
-                is_multiline: expression.is_multiline,
-            };
+        if (all_toasts.length > MAX_TOASTS_PER_RUN) {
+            new Notice(`...and ${all_toasts.length - MAX_TOASTS_PER_RUN} more notice${all_toasts.length - MAX_TOASTS_PER_RUN === 1 ? '' : 's'}`);
         }
 
-        return {
-            from: expression.from,
-            to: expression.to,
-            contents: expression.contents,
-            is_multiline: expression.is_multiline,
-        };
-    }
-
-    private async insertOrReplaceResult(
-        editor: Editor,
-        expression: Expression,
-        source: string,
-        result: SmartSolveResponse,
-    ): Promise<void> {
-        const formatted = await formatLatex(result.display_latex as string);
-        let block_text = `${source.trimEnd()} ${RESULT_MARKER} ${formatted}`;
-
-        if (!expression.is_multiline) {
-            block_text = block_text.replaceAll('\n', ' ');
-        }
-
-        const from_pos: EditorPosition = editor.offsetToPos(expression.from);
-        const to_pos: EditorPosition = editor.offsetToPos(expression.to);
-
-        editor.replaceRange(block_text, from_pos, to_pos);
-
-        const new_end_offset = expression.from + block_text.length;
-        editor.setCursor(editor.offsetToPos(new_end_offset));
+        const summary_parts = [`Re-evaluated ${display_count}/${all_blocks.length} block${all_blocks.length === 1 ? '' : 's'}`];
+        if (error_count > 0) summary_parts.push(`${error_count} error${error_count === 1 ? '' : 's'}`);
+        new Notice(summary_parts.join(' — '));
     }
 
     private showToast(toast: SmartSolveToast): void {
-        // Errors are surfaced longer; info/warning use Obsidian's default 4s.
         const timeout = toast.severity === "error" ? 8000 : undefined;
         new Notice(toast.text, timeout);
     }

@@ -81,8 +81,15 @@ class EvalHandlerBase(CommandHandler, ABC):
                 sympy_expr = sympy_expr.get_expr(-1)
 
             # for equalities, take the right hand side.
+            # Trailing-`=` blocks compile to Eq(lhs, Dummy()); fall back to lhs
+            # so the placeholder never reaches the printer.
             if isinstance(sympy_expr, Relational):
-                sympy_expr = sympy_expr.rhs
+                if isinstance(sympy_expr, Equality) and isinstance(
+                    sympy_expr.rhs, Dummy
+                ):
+                    sympy_expr = sympy_expr.lhs
+                else:
+                    sympy_expr = sympy_expr.rhs
 
         if isinstance(sympy_expr, PropositionExpr):
             separator = r"\equiv"
