@@ -1,7 +1,7 @@
 {
 	"id": "latex-math-smart-solve",
 	"name": "LaTeX Math (Smart Solve fork)",
-	"version": "1.5.1",
+	"version": "1.5.2",
 	"minAppVersion": "0.15.0",
 	"description": "Fork of LaTeX Math with notebook-style Smart Solve dispatch, section-scoped contexts, and implicit constraint accumulation.",
 	"author": "Albert Lin",

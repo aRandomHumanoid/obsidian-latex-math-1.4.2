@@ -44,6 +44,12 @@ export class SmartSolveCommand extends LatexMathCommand {
             return;
         }
 
+        // Out-of-block press = refresh-only mode: don't add `⇒` markers to
+        // blocks that don't already have one. Pressing inside a block opts that
+        // block into the "add a marker if displayable" path while still
+        // refreshing existing markers everywhere else.
+        const cursor_offset = editor.posToOffset(editor.getCursor());
+
         const updates: BlockUpdate[] = [];
         const all_toasts: SmartSolveToast[] = [];
         let display_count = 0;
@@ -53,11 +59,17 @@ export class SmartSolveCommand extends LatexMathCommand {
             // Bail if a newer press has taken over.
             if (this.current_run_id !== this_run_id) return;
 
-            const { source } = splitSource(block.contents);
-            const source_trimmed = source.trim();
+            const split = splitSource(block.contents);
+            const source_trimmed = split.source.trim();
+            const is_cursor_block = cursor_offset >= block.from && cursor_offset <= block.to;
 
             // Skip blocks that are empty after stripping any prior result.
             if (source_trimmed === "") continue;
+
+            // Out-of-block press on a block with no existing marker → don't
+            // even ask the backend. Avoids needless CAS round-trips and toasts
+            // for definitions/fresh equations the user didn't opt in to.
+            if (!is_cursor_block && !split.has_marker) continue;
 
             const context = SectionContextBuilder.build(app, view, editor.offsetToPos(block.from));
             const prior_blocks: PriorBlock[] = context.prior_blocks.map(b => ({
