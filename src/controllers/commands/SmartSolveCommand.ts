@@ -5,6 +5,7 @@ import { SectionContextBuilder } from "/models/cas/SectionContextBuilder";
 import { formatLatex } from "/utils/LatexFormatter";
 import { iterateMathBlocks } from "/utils/MathBlockIterator";
 import { resolveMarker, splitSource, stripResult } from "/utils/ResultMarker";
+import { buildSmartSolveBlockText, computeCursorOffset, BlockUpdate } from "/utils/SmartSolveRewrite";
 import { SuccessResponseVerifier } from "/services/ResponseVerifier";
 import {
     PriorBlock,
@@ -13,12 +14,6 @@ import {
     SmartSolveResponse,
     SmartSolveToast,
 } from "/models/cas/messages/SmartSolveMessage";
-
-interface BlockUpdate {
-    from: number;
-    to: number;
-    new_text: string;
-}
 
 // Cap on individual toasts per run before we collapse the remainder into a
 // single rollup notice. Document-wide runs can emit a lot, and Obsidian
@@ -64,6 +59,7 @@ export class SmartSolveCommand extends LatexMathCommand {
         const marker = resolveMarker(this.getMarker());
 
         const updates: BlockUpdate[] = [];
+        let cursor_update: BlockUpdate | undefined;
         const all_toasts: SmartSolveToast[] = [];
         let display_count = 0;
         let error_count = 0;
@@ -104,28 +100,13 @@ export class SmartSolveCommand extends LatexMathCommand {
             // Preserve the user's delimiter flavor: `$$...$$` (possibly fenced)
             // vs. `$...$` (inline, single-line).
             const original_raw = editor.getRange(editor.offsetToPos(block.from), editor.offsetToPos(block.to));
-            const is_display = original_raw.startsWith("$$");
 
             let new_inner: string | null = null;
-            let force_multiline = false;
 
             if (result.kind === "display" && result.display_latex !== undefined && may_write_marker) {
                 const formatted = await formatLatex(result.display_latex);
 
-                // Pressing inside a `$$...$$` block promotes single-line to
-                // multi-line so the result lands on its own line. Refreshing
-                // an existing marker keeps the block's current flavor.
-                if (is_cursor_block && is_display) {
-                    force_multiline = true;
-                }
-
-                const will_be_multiline = is_display && (force_multiline || /\n/.test(original_raw));
-
-                if (will_be_multiline) {
-                    new_inner = `${source_trimmed}\n${marker} ${formatted.replaceAll("\n", " ")}`;
-                } else {
-                    new_inner = `${source_trimmed} ${marker} ${formatted}`.replaceAll('\n', ' ');
-                }
+                new_inner = `${source_trimmed} ${marker} ${formatted.replaceAll("\n", " ")}`;
                 display_count++;
             } else if (result.kind === "silent" && split.has_marker) {
                 // Stale result on a now-silent block (e.g., a verified equality
@@ -135,15 +116,20 @@ export class SmartSolveCommand extends LatexMathCommand {
             // no_op leaves the block untouched.
 
             if (new_inner !== null) {
-                let new_text: string;
-                if (is_display) {
-                    const will_be_multiline = force_multiline || /\n/.test(original_raw);
-                    new_text = will_be_multiline ? `$$\n${new_inner}\n$$` : `$$${new_inner}$$`;
-                } else {
-                    new_text = `$${new_inner}$`;
+                const next_char_is_newline = doc_text.slice(block.to, block.to + 1) === "\n";
+                const update: BlockUpdate = {
+                    from: block.from,
+                    to: block.to + (next_char_is_newline ? 1 : 0),
+                    new_text: buildSmartSolveBlockText(original_raw, new_inner),
+                };
+                const original_slice = doc_text.slice(update.from, update.to);
+
+                if (is_cursor_block) {
+                    cursor_update = update;
                 }
-                if (new_text !== original_raw) {
-                    updates.push({ from: block.from, to: block.to, new_text });
+
+                if (update.new_text !== original_slice) {
+                    updates.push(update);
                 }
             }
         }
@@ -155,6 +141,11 @@ export class SmartSolveCommand extends LatexMathCommand {
         for (let i = updates.length - 1; i >= 0; i--) {
             const u = updates[i];
             editor.replaceRange(u.new_text, editor.offsetToPos(u.from), editor.offsetToPos(u.to));
+        }
+
+        if (cursor_update !== undefined) {
+            const cursor_offset = computeCursorOffset(cursor_update, updates);
+            editor.setCursor(editor.offsetToPos(cursor_offset));
         }
 
         for (const toast of all_toasts.slice(0, MAX_TOASTS_PER_RUN)) {
