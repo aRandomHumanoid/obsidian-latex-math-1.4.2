@@ -166,6 +166,37 @@ class TestSmartSolveChainedDefinitions:
         assert result.display_latex == "4"
 
 
+class TestSmartSolveStoredAmbiguousValues:
+    def test_replayed_multi_solution_prints_full_set(self):
+        result = _dispatch(
+            r"x =",
+            prior_blocks=[r"x^2 = 4"],
+        )
+        assert result.kind == "display"
+        assert result.display_latex == r"\left\{-2, 2\right\}"
+        assert not any(t.severity == "warning" for t in result.toasts)
+
+    def test_replayed_multi_solution_warns_when_used_in_calculation(self):
+        result = _dispatch(
+            r"x + 1 =",
+            prior_blocks=[r"x^2 = 4"],
+        )
+        assert result.kind == "display"
+        assert result.display_latex == "3"
+        warnings = [t for t in result.toasts if t.severity == "warning"]
+        assert len(warnings) == 1
+        assert "Multiple stored values for x" in warnings[0].text
+        assert "Using 2" in warnings[0].text
+
+    def test_replayed_ambiguous_value_can_feed_later_definition(self):
+        result = _dispatch(
+            r"y =",
+            prior_blocks=[r"x^2 = 4", r"y = x + 1"],
+        )
+        assert result.kind == "display"
+        assert result.display_latex == "3"
+
+
 # ---------------------------------------------------------------------------
 # Override edge cases
 # ---------------------------------------------------------------------------

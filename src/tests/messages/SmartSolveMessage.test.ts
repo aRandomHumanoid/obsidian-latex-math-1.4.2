@@ -94,6 +94,27 @@ test("Smart Solve: multi-solution emits warning with both roots", async () => {
     expect(warnings[0].text).toMatch(/Multiple solutions/);
 });
 
+test("Smart Solve: replayed multi-solution prints the stored set", async () => {
+    const r = await dispatch("x =", {
+        prior_blocks: [{ contents: "x^2 = 4" }],
+    });
+    expect(r.kind).toBe("display");
+    expect(r.display_latex).toBe("\\left\\{-2, 2\\right\\}");
+    expect(r.toasts.some(t => t.severity === "warning")).toBe(false);
+});
+
+test("Smart Solve: replayed multi-solution warns when used in a calculation", async () => {
+    const r = await dispatch("x + 1 =", {
+        prior_blocks: [{ contents: "x^2 = 4" }],
+    });
+    expect(r.kind).toBe("display");
+    expect(r.display_latex).toBe("3");
+    const warnings = r.toasts.filter(t => t.severity === "warning");
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0].text).toMatch(/Multiple stored values for x/);
+    expect(warnings[0].text).toMatch(/Using 2/);
+});
+
 test("Smart Solve: override emits info toast on value change", async () => {
     const env = new LmatEnvironment({}, [{ name_expr: "x", value_expr: "3" }]);
     const r = await dispatch("x + 1 = 5", { environment: env });

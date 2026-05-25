@@ -18,9 +18,10 @@ from sympy.core.function import AppliedUndef
 from sympy.core.relational import Equality, Relational
 
 from lmat_cas_client.compiling.Compiler import LatexToSympyCompiler
-from lmat_cas_client.compiling.Definitions import SympyDefinition
+from lmat_cas_client.compiling.Definitions import MultiValueDefinition, SympyDefinition
 from lmat_cas_client.compiling.DefinitionStore import DefinitionStore
 from lmat_cas_client.LmatEnvironment import LmatEnvironment
+from lmat_cas_client.smart_solve import Tiebreaker
 from lmat_cas_client.smart_solve.ConstraintStore import (
     ConstraintStore,
     apply_determined,
@@ -176,7 +177,11 @@ def _replay_relation(
         if defn is None:
             continue
         try:
-            substituted = substituted.subs(sym, defn.defined_value(store))
+            if isinstance(defn, MultiValueDefinition):
+                value = Tiebreaker.select(list(defn.values), None).chosen
+            else:
+                value = defn.defined_value(store)
+            substituted = substituted.subs(sym, value)
         except Exception:
             return
 
@@ -219,10 +224,9 @@ def _solve_and_store(
     if not isinstance(solutions, FiniteSet) or len(solutions) == 0:
         return
 
-    # Single solution: store it. Multi-solution: defer until the current block
-    # decides (the same equation will be replayed at most once per session and
-    # the design's tiebreaker fires at that moment for the current block, not
-    # during the silent replay of prior context).
-    if len(solutions) == 1:
-        value = simplify(next(iter(solutions)))
-        store.set_definition(target.name, SympyDefinition(value))
+    candidates = [simplify(solution) for solution in solutions.args]
+    if len(candidates) == 1:
+        store.set_definition(target.name, SympyDefinition(candidates[0]))
+        return
+
+    store.set_definition(target.name, MultiValueDefinition(candidates))

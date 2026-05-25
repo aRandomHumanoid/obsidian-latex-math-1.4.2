@@ -1,7 +1,7 @@
 from typing import Iterable, override
 
 from lark import Tree
-from sympy import Expr, Function, Symbol
+from sympy import Expr, FiniteSet, Function, Symbol
 from sympy.core.function import AppliedUndef
 
 from lmat_cas_client.compiling.transforming.TransformerRunner import TransformerRunner
@@ -36,6 +36,31 @@ class SympyDefinition(Definition):
                 self._sympy_expr.free_symbols | self._sympy_expr.atoms(AppliedUndef),
             )
         )
+
+
+class MultiValueDefinition(Definition):
+    def __init__(self, values: Iterable[Expr]):
+        self._values = tuple(values)
+
+    @property
+    def values(self) -> tuple[Expr, ...]:
+        return self._values
+
+    @override
+    def defined_value(self, _definition_store: DefinitionStore):
+        return FiniteSet(*self._values)
+
+    @override
+    def dependencies(self) -> set[str]:
+        dependencies: set[str] = set()
+        for value in self._values:
+            dependencies.update(
+                map(
+                    lambda d: d.name,
+                    value.free_symbols | value.atoms(AppliedUndef),
+                )
+            )
+        return dependencies
 
 
 class SympyFunctionDefinition(FunctionDefinition):

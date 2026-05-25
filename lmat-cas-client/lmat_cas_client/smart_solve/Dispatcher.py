@@ -23,6 +23,7 @@ from sympy.solvers.solveset import NonlinearError
 
 import lmat_cas_client.math_lib.units.UnitUtils as UnitUtils
 from lmat_cas_client.compiling.Compiler import LatexToSympyCompiler
+from lmat_cas_client.compiling.Definitions import MultiValueDefinition
 from lmat_cas_client.compiling.DefinitionStore import DefinitionStore
 from lmat_cas_client.compiling.transforming.SystemOfExpr import SystemOfExpr
 from lmat_cas_client.LmatEnvironment import LmatEnvironment
@@ -88,24 +89,60 @@ def _evaluate_expression(expr: Expr, env: LmatEnvironment) -> Expr:
     return _auto_convert(simplify(expr.doit()), env)
 
 
+def _resolve_definition_value(
+    sym: Symbol,
+    def_store: DefinitionStore,
+    *,
+    for_calculation: bool,
+    sig_figs: int,
+) -> tuple[object | None, list[Toast]]:
+    defn = def_store.get_definition(sym.name)
+    if defn is None:
+        return None, []
+
+    if isinstance(defn, MultiValueDefinition):
+        if not for_calculation:
+            return defn.defined_value(def_store), []
+
+        selection = Tiebreaker.select(list(defn.values), None)
+        toasts: list[Toast] = []
+        if selection.was_choice_made:
+            all_sols = ", ".join(render(s, sig_figs) for s in defn.values)
+            toasts.append(
+                Toast(
+                    "warning",
+                    f"Multiple stored values for {sym}: {{{all_sols}}}. Using {render(selection.chosen, sig_figs)} for this calculation.",
+                )
+            )
+        return selection.chosen, toasts
+
+    try:
+        return defn.defined_value(def_store), []
+    except Exception:
+        return None, []
+
+
 def _substitute_defined(
     expr: Expr,
     targets: set[Symbol],
     def_store: DefinitionStore,
-) -> Expr:
+) -> tuple[Expr, list[Toast]]:
     """Substitute definitions for every free symbol in `expr` that is NOT in `targets`."""
+    toasts: list[Toast] = []
     for sym in list(expr.free_symbols):
         if sym in targets:
             continue
-        defn = def_store.get_definition(sym.name)
-        if defn is None:
+        value, value_toasts = _resolve_definition_value(
+            sym,
+            def_store,
+            for_calculation=True,
+            sig_figs=DEFAULT_SIG_FIGS,
+        )
+        if value is None:
             continue
-        try:
-            value = defn.defined_value(def_store)
-        except Exception:
-            continue
+        toasts.extend(value_toasts)
         expr = expr.subs(sym, value)
-    return expr
+    return expr, toasts
 
 
 def _resolve_sig_figs(environment: LmatEnvironment) -> int:
@@ -133,6 +170,8 @@ def _resolve_prior(target: Symbol, def_store: DefinitionStore) -> Optional[Expr]
     defn = def_store.get_definition(target.name)
     if defn is None:
         return None
+    if isinstance(defn, MultiValueDefinition):
+        return Tiebreaker.select(list(defn.values), None).chosen
     try:
         value = defn.defined_value(def_store)
     except Exception:
@@ -188,7 +227,7 @@ def _try_resolve_via_constraints(
     expr: Expr,
     constraints,  # ConstraintStore
     def_store: DefinitionStore,
-) -> Optional[Expr]:
+) -> tuple[Optional[Expr], list[Toast]]:
     """
     Attempt to express `expr` using the accumulated constraint system.
 
@@ -203,7 +242,9 @@ def _try_resolve_via_constraints(
     progress was made (no constraints, solver failure, etc.).
     """
     if not getattr(constraints, "constraints", None):
-        return None
+        return None, []
+
+    toasts: list[Toast] = []
 
     # Materialize any definitions already in the store before solving — this
     # mirrors ConstraintStore.solve_and_materialize's behavior so we don't
@@ -212,13 +253,15 @@ def _try_resolve_via_constraints(
     for c in constraints.constraints:
         sc = c
         for sym in list(sc.free_symbols):
-            defn = def_store.get_definition(sym.name)
-            if defn is None:
+            value, value_toasts = _resolve_definition_value(
+                sym,
+                def_store,
+                for_calculation=True,
+                sig_figs=DEFAULT_SIG_FIGS,
+            )
+            if value is None:
                 continue
-            try:
-                value = defn.defined_value(def_store)
-            except Exception:
-                continue
+            toasts.extend(value_toasts)
             try:
                 sc = sc.subs(sym, value)
             except Exception:
@@ -229,7 +272,7 @@ def _try_resolve_via_constraints(
     for c in substituted_constraints:
         all_constraint_syms |= c.free_symbols
     if not all_constraint_syms:
-        return None
+        return None, toasts
 
     ordered = sorted(all_constraint_syms, key=lambda s: s.name)
 
@@ -239,12 +282,12 @@ def _try_resolve_via_constraints(
         try:
             sols = nonlinsolve(substituted_constraints, ordered)
         except Exception:
-            return None
+            return None, toasts
     except Exception:
-        return None
+        return None, toasts
 
     if not isinstance(sols, FiniteSet) or len(sols) == 0:
-        return None
+        return None, toasts
 
     first = next(iter(sols))
     if isinstance(first, (tuple, Tuple)):
@@ -261,18 +304,18 @@ def _try_resolve_via_constraints(
         sub_dict[sym] = value
 
     if not sub_dict:
-        return None
+        return None, toasts
 
     try:
         new_expr = expr.subs(sub_dict)
     except Exception:
-        return None
+        return None, toasts
 
     try:
         new_expr = simplify(new_expr)
     except Exception:
         pass
-    return new_expr
+    return new_expr, toasts
 
 
 # --- Top-level dispatch ----------------------------------------------------
@@ -376,20 +419,26 @@ class SmartSolveDispatcher:
         }
         targets = syntactic_vars - defined_syms
 
-        substituted = _substitute_defined(expr, targets, def_store)
+        substituted, toasts = _substitute_defined(expr, targets, def_store)
 
         # Substitution may collapse the relation into a Boolean (e.g. Eq(8, 10) → False).
         if isinstance(substituted, BooleanAtom):
-            return self._verify_boolean(substituted, expr)
+            result = self._verify_boolean(substituted, expr)
+            result.toasts = toasts + result.toasts
+            return result
 
         remaining = substituted.free_symbols
 
         if len(remaining) == 0:
-            return self._verify_concrete(substituted.lhs, substituted.rhs)
+            result = self._verify_concrete(substituted.lhs, substituted.rhs)
+            result.toasts = toasts + result.toasts
+            return result
 
         if len(remaining) == 1:
             target = next(iter(remaining))
-            return self._solve_single(substituted, target, def_store, environment)
+            result = self._solve_single(substituted, target, def_store, environment)
+            result.toasts = toasts + result.toasts
+            return result
 
         # ≥2 unresolved targets → constraint accumulation (design_docs.md
         # §"Permissive Partial-System Solving"). Add this equation to the
@@ -589,38 +638,58 @@ class SmartSolveDispatcher:
         environment: LmatEnvironment,
     ) -> DispatchResult:
         # Substitute all definitions, then evaluate.
-        substituted = _substitute_defined(expr, set(), def_store)
+        if isinstance(expr, Symbol):
+            value, toasts = _resolve_definition_value(
+                expr,
+                def_store,
+                for_calculation=False,
+                sig_figs=_resolve_sig_figs(environment),
+            )
+            if value is not None:
+                try:
+                    result = _evaluate_expression(value, environment)
+                except Exception as e:
+                    return _error(f"Evaluation failed: {e}")
+                return _display(render(result, _resolve_sig_figs(environment)), toasts)
+
+        substituted, toasts = _substitute_defined(expr, set(), def_store)
 
         try:
             result = _evaluate_expression(substituted, environment)
         except Exception as e:
-            return _error(f"Evaluation failed: {e}")
+            failure = _error(f"Evaluation failed: {e}")
+            failure.toasts = toasts + failure.toasts
+            return failure
 
         sig_figs = _resolve_sig_figs(environment)
         unresolved = {s for s in result.free_symbols if not isinstance(s, Dummy)}
 
         if not unresolved:
-            return _display(render(result, sig_figs))
+            return _display(render(result, sig_figs), toasts)
 
         # Symbolic fallback: if the accumulated constraints over-determine some
         # of the unresolved symbols, substitute them in. The expression may
         # still have free parameters — that's fine, we surface them so the user
         # knows it's a symbolic answer rather than a numeric one.
-        resolved = _try_resolve_via_constraints(result, constraints, def_store)
+        resolved, constraint_toasts = _try_resolve_via_constraints(
+            result, constraints, def_store
+        )
         if resolved is not None and resolved != result:
             still_unresolved = {
                 s for s in resolved.free_symbols if not isinstance(s, Dummy)
             }
-            toasts: list[Toast] = []
+            all_toasts = toasts + constraint_toasts
             if still_unresolved:
                 free_list = ", ".join(sorted(str(s) for s in still_unresolved))
-                toasts.append(
+                all_toasts.append(
                     Toast(
                         "info",
                         f"Symbolic result (free parameters: {free_list}).",
                     )
                 )
-            return _display(render(resolved, sig_figs), toasts)
+            return _display(render(resolved, sig_figs), all_toasts)
 
         var_list = ", ".join(sorted(str(s) for s in unresolved))
-        return _error(f"Undefined variable(s): {var_list}.")
+        failure = _error(f"Undefined variable(s): {var_list}.")
+        failure.toasts = toasts + constraint_toasts + failure.toasts
+        return failure
