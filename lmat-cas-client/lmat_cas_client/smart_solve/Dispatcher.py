@@ -517,14 +517,12 @@ class SmartSolveDispatcher:
         """Verification when substitution produced True/False directly."""
         if isinstance(b, BooleanTrue):
             return _silent()
-        return _silent(
-            [
-                Toast(
-                    "error",
-                    f"Contradiction: {lmat_latex(original.lhs)} ≠ {lmat_latex(original.rhs)} after substitution.",
-                )
-            ]
-        )
+        return _silent([
+            Toast(
+                "error",
+                f"Contradiction: {lmat_latex(original.lhs)} ≠ {lmat_latex(original.rhs)} after substitution.",
+            )
+        ])
 
     def _verify_concrete(self, lhs: Expr, rhs: Expr) -> DispatchResult:
         try:
@@ -536,14 +534,12 @@ class SmartSolveDispatcher:
             # Silent verification — design doc says "silent or subtle indicator".
             return _silent()
 
-        return _silent(
-            [
-                Toast(
-                    "error",
-                    f"Contradiction: {lmat_latex(lhs)} ≠ {lmat_latex(rhs)}.",
-                )
-            ]
-        )
+        return _silent([
+            Toast(
+                "error",
+                f"Contradiction: {lmat_latex(lhs)} ≠ {lmat_latex(rhs)}.",
+            )
+        ])
 
     def _solve_single(
         self,
@@ -598,11 +594,9 @@ class SmartSolveDispatcher:
             try:
                 first = next(iter(solutions))
             except (StopIteration, TypeError):
-                return _silent(
-                    [
-                        Toast("warning", f"Solution set: {lmat_latex(solutions)}"),
-                    ]
-                )
+                return _silent([
+                    Toast("warning", f"Solution set: {lmat_latex(solutions)}"),
+                ])
             value = _auto_convert(simplify(first), environment)
             return self._finish_single_solve(
                 target, value, prior_value, toasts=[], sig_figs=sig_figs
