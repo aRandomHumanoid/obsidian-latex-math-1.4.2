@@ -140,7 +140,9 @@ def advance_context(
         return
 
     try:
-        _replay_one(latex, context.def_store, context.constraints, base_environment, compiler)
+        _replay_one(
+            latex, context.def_store, context.constraints, base_environment, compiler
+        )
     except Exception:
         return
 

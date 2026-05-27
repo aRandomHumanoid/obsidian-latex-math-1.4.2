@@ -41,8 +41,7 @@ def _serialize_dispatch_result(dispatch_result: DispatchResult) -> dict:
     value = {
         "kind": dispatch_result.kind,
         "toasts": [
-            {"severity": t.severity, "text": t.text}
-            for t in dispatch_result.toasts
+            {"severity": t.severity, "text": t.text} for t in dispatch_result.toasts
         ],
         "metadata": metadata,
     }
@@ -70,9 +69,13 @@ class SmartSolveSectionCommandResult(CommandResult):
 
     @override
     def getResponsePayload(self) -> tuple[str, dict]:
-        return CommandResult.result({
-            "results": [_serialize_dispatch_result(result) for result in self._results],
-        })
+        return CommandResult.result(
+            {
+                "results": [
+                    _serialize_dispatch_result(result) for result in self._results
+                ],
+            }
+        )
 
 
 class SmartSolveHandler(CommandHandler):
