@@ -12,7 +12,10 @@ Coverage:
   - Replay cache hit / invalidation.
 """
 
-from lmat_cas_client.command_handlers.SmartSolveHandler import SmartSolveHandler
+from lmat_cas_client.command_handlers.SmartSolveHandler import (
+    SmartSolveHandler,
+    SmartSolveSectionHandler,
+)
 from lmat_cas_client.compiling.Compiler import LatexToSympyCompiler
 from lmat_cas_client.compiling.DefinitionStore import DefinitionStore
 from lmat_cas_client.LmatEnvironment import LmatEnvironment
@@ -45,6 +48,18 @@ def _dispatch(
         "environment": environment or {},
         "prior_blocks": [{"contents": b} for b in (prior_blocks or [])],
     })._result
+
+
+def _dispatch_section(
+    blocks: list[str],
+    *,
+    environment: dict | None = None,
+):
+    handler = SmartSolveSectionHandler(LatexToSympyCompiler())
+    return handler.handle({
+        "environment": environment or {},
+        "blocks": [{"contents": b} for b in blocks],
+    }).getResponsePayload()[1]["results"]
 
 
 # ---------------------------------------------------------------------------
@@ -150,6 +165,25 @@ class TestSmartSolveChainedDefinitions:
         )
         assert result.kind == "display"
         assert result.display_latex == "12"
+
+
+class TestSmartSolveSectionBatch:
+    def test_section_batch_reuses_prior_context(self):
+        results = _dispatch_section([r"x = 3", r"x + 1 ="])
+
+        assert len(results) == 2
+        assert results[0]["kind"] == "display"
+        assert results[0]["display_latex"] == "x = 3"
+        assert results[1]["kind"] == "display"
+        assert results[1]["display_latex"] == "4"
+
+    def test_section_batch_skips_bad_block_when_replaying_later_state(self):
+        results = _dispatch_section([r"this is not latex \$\$", r"x = 5", r"x + 1 ="])
+
+        assert results[0]["kind"] == "silent"
+        assert any(t["severity"] == "error" for t in results[0]["toasts"])
+        assert results[2]["kind"] == "display"
+        assert results[2]["display_latex"] == "6"
 
     def test_override_in_chain_propagates(self):
         # x = 3; y = x + 1 (=4); x = 10 (override). Now evaluate y.

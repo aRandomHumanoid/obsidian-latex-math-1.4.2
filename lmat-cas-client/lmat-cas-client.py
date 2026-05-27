@@ -10,7 +10,10 @@ from lmat_cas_client.command_handlers.EvalfHandler import EvalfHandler
 from lmat_cas_client.command_handlers.EvalHandler import EvalHandler
 from lmat_cas_client.command_handlers.ExpandHandler import ExpandHandler
 from lmat_cas_client.command_handlers.FactorHandler import FactorHandler
-from lmat_cas_client.command_handlers.SmartSolveHandler import SmartSolveHandler
+from lmat_cas_client.command_handlers.SmartSolveHandler import (
+    SmartSolveHandler,
+    SmartSolveSectionHandler,
+)
 from lmat_cas_client.command_handlers.SolveHandler import SolveHandler, SolveInfoHandler
 from lmat_cas_client.command_handlers.SymbolSetHandler import SymbolSetHandler
 from lmat_cas_client.command_handlers.test_handlers.TestHangHandler import (
@@ -40,6 +43,7 @@ client.register_handler("expand", ExpandHandler(LatexToSympyCompiler()))
 client.register_handler("factor", FactorHandler(LatexToSympyCompiler()))
 client.register_handler("apart", ApartHandler(LatexToSympyCompiler()))
 client.register_handler("smart-solve", SmartSolveHandler(LatexToSympyCompiler()))
+client.register_handler("smart-solve-section", SmartSolveSectionHandler(LatexToSympyCompiler()))
 client.register_handler("solve", SolveHandler(LatexToSympyCompiler()))
 client.register_handler("solve-info", SolveInfoHandler(LatexToSympyCompiler()))
 client.register_handler("symbolsets", SymbolSetHandler(LatexToSympyCompiler()))

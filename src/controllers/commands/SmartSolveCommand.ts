@@ -3,15 +3,14 @@ import { CasServer } from "/services/CasServer";
 import { LatexMathCommand } from "./LatexMathCommand";
 import { SectionContextBuilder } from "/models/cas/SectionContextBuilder";
 import { formatLatex } from "/utils/LatexFormatter";
-import { iterateMathBlocks } from "/utils/MathBlockIterator";
-import { resolveMarker, splitSource, stripResult } from "/utils/ResultMarker";
+import { resolveMarker, splitSource } from "/utils/ResultMarker";
 import { buildSmartSolveBlockText, computeCursorOffset, BlockUpdate } from "/utils/SmartSolveRewrite";
 import { SuccessResponseVerifier } from "/services/ResponseVerifier";
 import {
-    PriorBlock,
-    SmartSolveArgsPayload,
-    SmartSolveMessage,
     SmartSolveResponse,
+    SmartSolveSectionArgsPayload,
+    SmartSolveSectionMessage,
+    SmartSolveSectionResponse,
     SmartSolveToast,
 } from "/models/cas/messages/SmartSolveMessage";
 
@@ -43,10 +42,11 @@ export class SmartSolveCommand extends LatexMathCommand {
         const this_run_id = this.current_run_id;
 
         const doc_text = editor.getValue();
-        const all_blocks = iterateMathBlocks(doc_text);
+        const section_context = SectionContextBuilder.build(app, view);
+        const all_blocks = section_context.section_blocks;
 
         if (all_blocks.length === 0) {
-            new Notice("No math blocks in document");
+            new Notice("No math blocks in current section");
             return;
         }
 
@@ -63,34 +63,54 @@ export class SmartSolveCommand extends LatexMathCommand {
         const all_toasts: SmartSolveToast[] = [];
         let display_count = 0;
         let error_count = 0;
+        const formatted_cache = new Map<string, string>();
 
-        for (const block of all_blocks) {
+        const runnable_blocks = all_blocks
+            .map((block) => {
+                const split = splitSource(block.contents);
+                return {
+                    block,
+                    split,
+                    source_trimmed: split.source.trim(),
+                    is_cursor_block: cursor_offset >= block.from && cursor_offset <= block.to,
+                };
+            })
+            .filter((entry) => entry.source_trimmed !== "");
+
+        if (runnable_blocks.length === 0) {
+            new Notice("No non-empty math blocks in current section");
+            return;
+        }
+
+        let results: SmartSolveResponse[];
+        try {
+            const response = await cas_server.send(new SmartSolveSectionMessage(
+                new SmartSolveSectionArgsPayload(
+                    section_context.environment,
+                    runnable_blocks.map(({ source_trimmed }) => ({ contents: source_trimmed })),
+                ),
+            )).response;
+            const section_response = this.response_verifier.verifyResponse<SmartSolveSectionResponse>(response);
+            results = section_response.results;
+        } catch (e) {
+            new Notice(`Smart Solve error: ${e instanceof Error ? e.message : String(e)}`, 8000);
+            return;
+        }
+
+        if (results.length !== runnable_blocks.length) {
+            throw new Error(`Smart Solve section result count mismatch: expected ${runnable_blocks.length}, got ${results.length}`);
+        }
+
+        for (let index = 0; index < runnable_blocks.length; index++) {
             if (this.current_run_id !== this_run_id) return;
 
-            const split = splitSource(block.contents);
-            const source_trimmed = split.source.trim();
-            const is_cursor_block = cursor_offset >= block.from && cursor_offset <= block.to;
-
-            if (source_trimmed === "") continue;
-
-            // Always dispatch — we need the toasts even on blocks we won't write to.
-            const context = SectionContextBuilder.build(app, view, editor.offsetToPos(block.from));
-            const prior_blocks: PriorBlock[] = context.prior_blocks.map(b => ({
-                contents: stripResult(b.contents),
-            }));
-            const payload = new SmartSolveArgsPayload(source_trimmed, context.environment, prior_blocks);
-
-            let result: SmartSolveResponse;
-            try {
-                const response = await cas_server.send(new SmartSolveMessage(payload)).response;
-                result = this.response_verifier.verifyResponse<SmartSolveResponse>(response);
-            } catch (e) {
-                error_count++;
-                new Notice(`Smart Solve error on block: ${e instanceof Error ? e.message : String(e)}`, 8000);
-                continue;
-            }
+            const { block, split, source_trimmed, is_cursor_block } = runnable_blocks[index];
+            const result = results[index];
 
             all_toasts.push(...(result.toasts ?? []));
+            if (result.toasts?.some((toast) => toast.severity === "error")) {
+                error_count++;
+            }
 
             // Whether we're allowed to commit a *new* marker to this block.
             // Refresh-only blocks (outside cursor + no existing marker) get the
@@ -104,9 +124,13 @@ export class SmartSolveCommand extends LatexMathCommand {
             let new_inner: string | null = null;
 
             if (result.kind === "display" && result.display_latex !== undefined && may_write_marker) {
-                const formatted = await formatLatex(result.display_latex);
+                let formatted = formatted_cache.get(result.display_latex);
+                if (formatted === undefined) {
+                    formatted = await formatLatex(result.display_latex);
+                    formatted_cache.set(result.display_latex, formatted);
+                }
 
-                new_inner = `${source_trimmed} ${marker} ${formatted.replaceAll("\n", " ")}`;
+                new_inner = `${source_trimmed} ${marker} ${formatted.replaceAll("\n", " ")}${split.trailing_text ?? ""}`;
                 display_count++;
             } else if (result.kind === "silent" && split.has_marker) {
                 // Stale result on a now-silent block (e.g., a verified equality

@@ -20,6 +20,7 @@ export interface SplitResult {
     source: string;
     has_marker: boolean;
     marker_offset?: number;
+    trailing_text?: string;
 }
 
 // Split math-block contents on the first detected result marker.
@@ -32,10 +33,13 @@ export function splitSource(contents: string): SplitResult {
     }
 
     const before = contents.slice(0, match.index);
+    const marker_end = match.index + match[0].length;
+
     return {
         source: before.replace(/\s+$/, ''),
         has_marker: true,
         marker_offset: match.index,
+        trailing_text: extractTrailingText(contents, marker_end),
     };
 }
 
@@ -49,4 +53,93 @@ export function stripResult(contents: string): string {
 export function resolveMarker(configured: string | undefined): string {
     const trimmed = (configured ?? "").trim();
     return trimmed === "" ? DEFAULT_RESULT_MARKER : trimmed;
+}
+
+function extractTrailingText(contents: string, marker_end: number): string | undefined {
+    let candidate = contents.indexOf("\\text", marker_end);
+
+    while (candidate >= 0) {
+        let suffix_start = candidate;
+
+        while (suffix_start > marker_end && /\s/.test(contents[suffix_start - 1])) {
+            suffix_start -= 1;
+        }
+
+        if (consumeTrailingText(contents, suffix_start) === contents.length) {
+            return contents.slice(suffix_start);
+        }
+
+        candidate = contents.indexOf("\\text", candidate + 5);
+    }
+
+    return undefined;
+}
+
+function consumeTrailingText(contents: string, start: number): number {
+    let cursor = start;
+
+    while (cursor < contents.length) {
+        while (cursor < contents.length && /\s/.test(contents[cursor])) {
+            cursor += 1;
+        }
+
+        if (cursor === contents.length) {
+            return cursor;
+        }
+
+        if (!contents.startsWith("\\text", cursor)) {
+            return -1;
+        }
+
+        cursor += 5;
+
+        while (cursor < contents.length && /[A-Za-z]/.test(contents[cursor])) {
+            cursor += 1;
+        }
+
+        while (cursor < contents.length && /\s/.test(contents[cursor])) {
+            cursor += 1;
+        }
+
+        if (contents[cursor] !== "{") {
+            return -1;
+        }
+
+        cursor = consumeBalancedGroup(contents, cursor);
+        if (cursor < 0) {
+            return -1;
+        }
+    }
+
+    return cursor;
+}
+
+function consumeBalancedGroup(contents: string, open_index: number): number {
+    let depth = 0;
+
+    for (let cursor = open_index; cursor < contents.length; cursor++) {
+        const ch = contents[cursor];
+
+        if (ch === "\\") {
+            cursor += 1;
+            continue;
+        }
+
+        if (ch === "{") {
+            depth += 1;
+            continue;
+        }
+
+        if (ch !== "}") {
+            continue;
+        }
+
+        depth -= 1;
+
+        if (depth === 0) {
+            return cursor + 1;
+        }
+    }
+
+    return -1;
 }

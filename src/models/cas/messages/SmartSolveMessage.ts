@@ -5,6 +5,10 @@ export interface PriorBlock {
     contents: string;
 }
 
+export interface SmartSolveSectionBlock {
+    contents: string;
+}
+
 export class SmartSolveArgsPayload implements GenericPayload {
     public constructor(
         public expression: string,
@@ -17,6 +21,20 @@ export class SmartSolveArgsPayload implements GenericPayload {
 export class SmartSolveMessage extends StartCommandMessage {
     constructor(args: SmartSolveArgsPayload) {
         super({ command_type: 'smart-solve', start_args: args });
+    }
+}
+
+export class SmartSolveSectionArgsPayload implements GenericPayload {
+    public constructor(
+        public environment: LmatEnvironment,
+        public blocks: SmartSolveSectionBlock[],
+    ) { }
+    [x: string]: unknown;
+}
+
+export class SmartSolveSectionMessage extends StartCommandMessage {
+    constructor(args: SmartSolveSectionArgsPayload) {
+        super({ command_type: 'smart-solve-section', start_args: args });
     }
 }
 
@@ -42,4 +60,8 @@ export interface SmartSolveResponse {
         is_multiline?: boolean;
         end_line?: number;
     };
+}
+
+export interface SmartSolveSectionResponse {
+    results: SmartSolveResponse[];
 }

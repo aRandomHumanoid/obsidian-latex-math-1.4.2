@@ -333,11 +333,59 @@ class SmartSolveDispatcher:
     def __init__(self, compiler: LatexToSympyCompiler):
         self._compiler = compiler
 
+    def dispatch_section(
+        self,
+        blocks: list[str],
+        environment: LmatEnvironment,
+    ) -> list[DispatchResult]:
+        from lmat_cas_client.smart_solve.ContextReplay import (
+            advance_context,
+            create_context,
+        )
+
+        context = create_context(environment, self._compiler)
+        asm_store = self._create_assumption_store(environment)
+        results: list[DispatchResult] = []
+
+        for latex_str in blocks:
+            results.append(
+                self.dispatch_with_context(
+                    latex_str,
+                    environment,
+                    context.def_store.clone(),
+                    context.constraints.clone(),
+                    asm_store=asm_store,
+                )
+            )
+            advance_context(context, latex_str, environment, self._compiler)
+
+        return results
+
     def dispatch(
         self,
         latex_str: str,
         environment: LmatEnvironment,
         prior_blocks: Optional[list[str]] = None,
+    ) -> DispatchResult:
+        from lmat_cas_client.smart_solve.ContextReplay import replay_blocks
+
+        replayed = replay_blocks(prior_blocks or [], environment, self._compiler)
+
+        return self.dispatch_with_context(
+            latex_str,
+            environment,
+            replayed.def_store.clone(),
+            replayed.constraints.clone(),
+        )
+
+    def dispatch_with_context(
+        self,
+        latex_str: str,
+        environment: LmatEnvironment,
+        def_store: DefinitionStore,
+        constraints,
+        *,
+        asm_store: DefinitionStore | None = None,
     ) -> DispatchResult:
         # %ref check (design_docs.md §"Reference Equations"): documentation-only blocks.
         if _is_ref_block(latex_str):
@@ -349,24 +397,7 @@ class SmartSolveDispatcher:
         # previously-defined symbol. We do that by parsing with an
         # assumptions-only store, then carrying a separately-built full store
         # for substitution decisions made by the dispatcher itself.
-        asm_store = LmatEnvironment.create_definition_store(
-            LmatEnvironment(
-                symbols=environment.symbols,
-                definitions=[],
-                unit_system=environment.unit_system,
-                solve_domain=environment.solve_domain,
-            )
-        )
-
-        # Full store + constraints include:
-        # 1. assumptions from environment.symbols,
-        # 2. explicit `:=` definitions from environment.definitions, and
-        # 3. derived definitions / constraints from replaying prior blocks.
-        from lmat_cas_client.smart_solve.ContextReplay import replay_blocks
-
-        replayed = replay_blocks(prior_blocks or [], environment, self._compiler)
-        full_store = replayed.def_store
-        constraints = replayed.constraints
+        asm_store = self._create_assumption_store(environment) if asm_store is None else asm_store
 
         try:
             expr = self._compiler.compile(latex_str, asm_store)
@@ -377,9 +408,20 @@ class SmartSolveDispatcher:
             return _error("Multi-equation blocks are not yet supported by Smart Solve.")
 
         if isinstance(expr, Relational):
-            return self._dispatch_relation(expr, full_store, constraints, environment)
+            return self._dispatch_relation(expr, def_store, constraints, environment)
 
-        return self._dispatch_expression(expr, full_store, constraints, environment)
+        return self._dispatch_expression(expr, def_store, constraints, environment)
+
+    @staticmethod
+    def _create_assumption_store(environment: LmatEnvironment) -> DefinitionStore:
+        return LmatEnvironment.create_definition_store(
+            LmatEnvironment(
+                symbols=environment.symbols,
+                definitions=[],
+                unit_system=environment.unit_system,
+                solve_domain=environment.solve_domain,
+            )
+        )
 
     # --- Relation cases ---------------------------------------------------
 

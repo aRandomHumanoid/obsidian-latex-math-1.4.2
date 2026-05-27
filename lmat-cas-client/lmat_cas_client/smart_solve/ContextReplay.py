@@ -123,6 +123,36 @@ def replay_blocks(
     return result
 
 
+def create_context(
+    base_environment: LmatEnvironment,
+    compiler: LatexToSympyCompiler,
+) -> ReplayedContext:
+    return replay_blocks([], base_environment, compiler)
+
+
+def advance_context(
+    context: ReplayedContext,
+    latex: str,
+    base_environment: LmatEnvironment,
+    compiler: LatexToSympyCompiler,
+) -> None:
+    if not latex.strip() or is_ref_block(latex):
+        return
+
+    try:
+        _replay_one(latex, context.def_store, context.constraints, base_environment, compiler)
+    except Exception:
+        return
+
+    try:
+        determined = context.constraints.solve_and_materialize(context.def_store, None)
+    except Exception:
+        determined = {}
+
+    if determined:
+        apply_determined(context.def_store, determined)
+
+
 def _replay_one(
     latex: str,
     store: DefinitionStore,

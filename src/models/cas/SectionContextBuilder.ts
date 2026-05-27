@@ -11,6 +11,9 @@ const HORIZONTAL_RULE_REGEX = /^[ \t]*(?:-{3,}|\*{3,}|_{3,})[ \t]*$/m;
 export interface SectionContext {
     environment: LmatEnvironment;
     prior_blocks: MathBlockSpan[];
+    section_blocks: MathBlockSpan[];
+    section_start_offset: number;
+    section_end_offset: number;
 }
 
 // Section dividers per design_docs.md §"Section Scopes":
@@ -34,33 +37,55 @@ export class SectionContextBuilder {
         const file_cache = app.metadataCache.getFileCache(view.file);
         const sections = file_cache?.sections ?? [];
 
-        // Walk sections that end before the cursor; find the LATEST one that
-        // qualifies as a section divider, and grab its lmat config if any.
-        let divider_end_offset = 0;
+        const section_range = this.getSectionRange(sections, editor, cursor_offset, editor.getValue().length);
+
+        const section_text = editor.getRange(
+            editor.offsetToPos(section_range.start_offset),
+            editor.offsetToPos(section_range.end_offset),
+        );
+
+        const section_blocks = iterateMathBlocks(section_text, section_range.start_offset);
+
+        const prior_blocks = section_blocks.filter(b => b.to < cursor_offset);
+
+        const environment = LmatEnvironment.fromCodeBlock(section_range.lmat_config_text, []);
+
+        return {
+            environment,
+            prior_blocks,
+            section_blocks,
+            section_start_offset: section_range.start_offset,
+            section_end_offset: section_range.end_offset,
+        };
+    }
+
+    private static getSectionRange(
+        sections: { type: string; position: { start: { offset: number }; end: { offset: number } } }[],
+        editor: Editor,
+        cursor_offset: number,
+        document_length: number,
+    ): { start_offset: number; end_offset: number; lmat_config_text?: string } {
+        let start_offset = 0;
+        let end_offset = document_length;
         let lmat_config_text: string | undefined = undefined;
 
         for (const section of sections) {
-            if (section.position.end.offset >= cursor_offset) break;
-
             const is_divider = this.isDivider(section, editor);
             if (!is_divider.divider) continue;
 
-            divider_end_offset = section.position.end.offset;
-            lmat_config_text = is_divider.lmat_text;
+            if (section.position.end.offset < cursor_offset) {
+                start_offset = section.position.end.offset;
+                lmat_config_text = is_divider.lmat_text;
+                continue;
+            }
+
+            if (section.position.start.offset > cursor_offset) {
+                end_offset = section.position.start.offset;
+                break;
+            }
         }
 
-        // Body of the section starts after the divider's end.
-        const body_text = editor.getRange(editor.offsetToPos(divider_end_offset), position);
-
-        const all_blocks = iterateMathBlocks(body_text, divider_end_offset);
-
-        // The block at the cursor itself is the one being run right now — exclude it
-        // from prior_blocks. We detect it by checking if the cursor falls inside.
-        const prior_blocks = all_blocks.filter(b => b.to < cursor_offset);
-
-        const environment = LmatEnvironment.fromCodeBlock(lmat_config_text, []);
-
-        return { environment, prior_blocks };
+        return { start_offset, end_offset, lmat_config_text };
     }
 
     private static isDivider(

@@ -17,6 +17,7 @@ describe("ResultMarker", () => {
         expect(result.has_marker).toBe(true);
         expect(result.source).toBe("x + 3 = 7");
         expect(result.marker_offset).toBeGreaterThan(0);
+        expect(result.trailing_text).toBeUndefined();
     });
 
     test("marker present with extra whitespace inside marker: still detected", () => {
@@ -56,6 +57,30 @@ describe("ResultMarker", () => {
         const result = splitSource(contents);
         expect(result.has_marker).toBe(true);
         expect(result.source).toBe("x = 5");
+    });
+
+    test("trailing text after a marker is excluded from solver input and preserved separately", () => {
+        const contents = String.raw`x ${RESULT_MARKER} 3\text{ hi}`;
+        const result = splitSource(contents);
+
+        expect(result.has_marker).toBe(true);
+        expect(result.source).toBe("x");
+        expect(result.trailing_text).toBe(String.raw`\text{ hi}`);
+        expect(stripResult(contents)).toBe("x");
+    });
+
+    test("trailing spaced text annotation is preserved with its leading whitespace", () => {
+        const contents = String.raw`x ${RESULT_MARKER} 3 \text{ hi}`;
+        const result = splitSource(contents);
+
+        expect(result.trailing_text).toBe(String.raw` \text{ hi}`);
+    });
+
+    test("nested text blocks at the end are preserved as a suffix", () => {
+        const contents = String.raw`x ${RESULT_MARKER} 3\text{ hi \textbf{there} }`;
+        const result = splitSource(contents);
+
+        expect(result.trailing_text).toBe(String.raw`\text{ hi \textbf{there} }`);
     });
 
     test("multi-line source preserved on the source side", () => {

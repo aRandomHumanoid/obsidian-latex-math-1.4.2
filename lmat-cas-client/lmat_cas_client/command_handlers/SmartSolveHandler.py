@@ -22,6 +22,37 @@ class SmartSolveMessage(BaseModel):
     prior_blocks: list[PriorBlock] = []
 
 
+class SmartSolveSectionBlock(BaseModel):
+    contents: str
+
+
+class SmartSolveSectionMessage(BaseModel):
+    environment: LmatEnvironment
+    blocks: list[SmartSolveSectionBlock] = []
+
+
+def _serialize_dispatch_result(dispatch_result: DispatchResult) -> dict:
+    metadata: dict = {}
+    if dispatch_result.is_multiline is not None:
+        metadata["is_multiline"] = dispatch_result.is_multiline
+    if dispatch_result.end_line is not None:
+        metadata["end_line"] = dispatch_result.end_line
+
+    value = {
+        "kind": dispatch_result.kind,
+        "toasts": [
+            {"severity": t.severity, "text": t.text}
+            for t in dispatch_result.toasts
+        ],
+        "metadata": metadata,
+    }
+
+    if dispatch_result.display_latex is not None:
+        value["display_latex"] = dispatch_result.display_latex
+
+    return value
+
+
 class SmartSolveCommandResult(CommandResult):
     def __init__(self, dispatch_result: DispatchResult):
         super().__init__()
@@ -29,24 +60,19 @@ class SmartSolveCommandResult(CommandResult):
 
     @override
     def getResponsePayload(self) -> tuple[str, dict]:
-        metadata: dict = {}
-        if self._result.is_multiline is not None:
-            metadata["is_multiline"] = self._result.is_multiline
-        if self._result.end_line is not None:
-            metadata["end_line"] = self._result.end_line
+        return CommandResult.result(_serialize_dispatch_result(self._result))
 
-        value = {
-            "kind": self._result.kind,
-            "toasts": [
-                {"severity": t.severity, "text": t.text} for t in self._result.toasts
-            ],
-            "metadata": metadata,
-        }
 
-        if self._result.display_latex is not None:
-            value["display_latex"] = self._result.display_latex
+class SmartSolveSectionCommandResult(CommandResult):
+    def __init__(self, dispatch_results: list[DispatchResult]):
+        super().__init__()
+        self._results = dispatch_results
 
-        return CommandResult.result(value)
+    @override
+    def getResponsePayload(self) -> tuple[str, dict]:
+        return CommandResult.result({
+            "results": [_serialize_dispatch_result(result) for result in self._results],
+        })
 
 
 class SmartSolveHandler(CommandHandler):
@@ -70,3 +96,18 @@ class SmartSolveHandler(CommandHandler):
             prior_blocks=prior_latex,
         )
         return SmartSolveCommandResult(result)
+
+
+class SmartSolveSectionHandler(CommandHandler):
+    def __init__(self, compiler: LatexToSympyCompiler):
+        super().__init__()
+        self._dispatcher = SmartSolveDispatcher(compiler)
+
+    @override
+    def handle(self, message) -> SmartSolveSectionCommandResult:
+        message = SmartSolveSectionMessage.model_validate(message)
+        results = self._dispatcher.dispatch_section(
+            [block.contents for block in message.blocks],
+            message.environment,
+        )
+        return SmartSolveSectionCommandResult(results)
