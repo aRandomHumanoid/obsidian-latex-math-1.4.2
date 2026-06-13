@@ -12,10 +12,13 @@
 // branch on flavor — the `from`/`to` offsets cover the literal delimiters in
 // either case.
 
+import { precededByIgnoreMarker } from "/utils/IgnoreMarker";
+
 export interface MathBlockSpan {
     contents: string;   // text between the delimiters (trimmed)
     from: number;       // offset of the opening `$` (first of `$$` for display)
     to: number;         // offset just past the closing `$` (or second `$` for display)
+    ignored: boolean;   // preceded by a `<!-- lmat:ignore -->` marker
 }
 
 export function iterateMathBlocks(text: string, base_offset = 0): MathBlockSpan[] {
@@ -58,6 +61,7 @@ export function iterateMathBlocks(text: string, base_offset = 0): MathBlockSpan[
                 contents: text.slice(open + 2, j).trim(),
                 from: base_offset + open,
                 to: base_offset + j + 2,
+                ignored: precededByIgnoreMarker(text.slice(0, open)),
             });
             i = j + 2;
             continue;
@@ -93,6 +97,7 @@ export function iterateMathBlocks(text: string, base_offset = 0): MathBlockSpan[
             contents: text.slice(open + 1, closed_at).trim(),
             from: base_offset + open,
             to: base_offset + closed_at + 1,
+            ignored: precededByIgnoreMarker(text.slice(0, open)),
         });
         i = closed_at + 1;
     }

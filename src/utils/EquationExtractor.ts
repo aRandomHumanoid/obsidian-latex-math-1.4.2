@@ -1,12 +1,13 @@
 import { syntaxTree } from "@codemirror/language";
 import { EditorState } from "@codemirror/state";
 import { Editor } from "obsidian";
+import { IGNORE_MARKER_LOOKBACK, precededByIgnoreMarker } from "/utils/IgnoreMarker";
 
 export class EquationExtractor {
 
     // Extract the contents of the equation block, which the given position offset is currently inside.
     // Returns null if the position is not inside an equation.
-    public static extractEquation(position: number, editor: Editor): { from: number; to: number, block_from: number, block_to: number, contents: string, is_multiline: boolean } | null {
+    public static extractEquation(position: number, editor: Editor): { from: number; to: number, block_from: number, block_to: number, contents: string, is_multiline: boolean, ignored: boolean } | null {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const state = (editor as any).cm.state as EditorState;
 
@@ -58,13 +59,19 @@ export class EquationExtractor {
             to -= 3;
         }
 
+        // A `<!-- lmat:ignore -->` marker immediately before the block opts the
+        // whole block out of evaluation, regardless of any selection within it.
+        const lookback_start = Math.max(0, block_from - IGNORE_MARKER_LOOKBACK);
+        const text_before = editor.getRange(editor.offsetToPos(lookback_start), editor.offsetToPos(block_from));
+
         return {
             from: from,
             to: to,
             block_from: block_from,
             block_to: block_to,
             contents: editor.getRange(editor.offsetToPos(from), editor.offsetToPos(to)),
-            is_multiline: /^\$\$.*\$\$$/s.test(editor.getRange(editor.offsetToPos(block_from), editor.offsetToPos(block_to)))
+            is_multiline: /^\$\$.*\$\$$/s.test(editor.getRange(editor.offsetToPos(block_from), editor.offsetToPos(block_to))),
+            ignored: precededByIgnoreMarker(text_before),
         };
     }
 

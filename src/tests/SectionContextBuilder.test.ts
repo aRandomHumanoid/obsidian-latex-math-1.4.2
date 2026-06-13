@@ -77,3 +77,20 @@ test("SectionContextBuilder scopes blocks to the cursor section", () => {
     expect(result.prior_blocks.map(block => block.contents)).toEqual(["x = 3"]);
     expect(result.environment.solve_domain).toBe("S.Reals");
 });
+
+test("SectionContextBuilder flags lmat:ignore blocks in the section", () => {
+    const text = [
+        "$a = 1$",
+        "<!-- lmat:ignore --> $b = 2$",
+    ].join("\n");
+
+    const editor = createEditor(text);
+    const app = { metadataCache: { getFileCache: () => ({ sections: [] }) } };
+    const view = { file: {}, editor };
+    const cursor = editor.offsetToPos(text.length);
+
+    const result = SectionContextBuilder.build(app as never, view as never, cursor as never);
+
+    expect(result.section_blocks.map(b => b.contents)).toEqual(["a = 1", "b = 2"]);
+    expect(result.section_blocks.map(b => b.ignored)).toEqual([false, true]);
+});

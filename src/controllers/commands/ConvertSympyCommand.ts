@@ -2,6 +2,7 @@ import { App, Editor, MarkdownView, Notice } from "obsidian";
 import { CasServer } from "/services/CasServer";
 import { LatexMathCommand } from "./LatexMathCommand";
 import { EquationExtractor } from "/utils/EquationExtractor";
+import { IGNORE_NOTICE } from "/utils/IgnoreMarker";
 import { LmatEnvironment } from "/models/cas/LmatEnvironment";
 import { ConvertSympyArgsPayload, ConvertSympyMessage, ConvertSympyResponse } from "/models/cas/messages/ConvertSympyMessage";
 
@@ -14,6 +15,13 @@ export class ConvertSympyCommand extends LatexMathCommand {
     }
 
     async functionCallback(cas_server: CasServer, app: App, editor: Editor, view: MarkdownView): Promise<void> {
+        // Block-level ignore: check the cursor's block regardless of any selection.
+        const cursor_block = EquationExtractor.extractEquation(editor.posToOffset(editor.getCursor()), editor);
+        if (cursor_block?.ignored) {
+            new Notice(IGNORE_NOTICE);
+            return;
+        }
+
         let equation: { from: number, to: number, block_to: number, contents: string } | null = null;
 
         // Extract equation to evaluate

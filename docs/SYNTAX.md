@@ -3,7 +3,7 @@
 
 This document aims to provide an overview of the LaTeX parsing capabilities of this plugin. As a general note, the parser was designed with standard LaTeX notation in mind, so as long as you avoid complex formatting or esoteric math functions, it should be straightforward to write LaTeX formulas that the plugin can parse.
 
-While this document provides a good overview of the parser, you can also consult the [grammar files](lmat-cas-client/lmat_cas_client/grammar/latex_math_grammar.lark) for the concrete implementation.
+While this document provides a good overview of the parser, you can also consult the [grammar files](../lmat-cas-client/lmat_cas_client/compiling/parsing/latex_math_grammar.lark) for the concrete implementation.
 
 <!-- omit in toc -->
 ## Table of Contents
@@ -17,6 +17,7 @@ While this document provides a good overview of the parser, you can also consult
 - [Symbols](#symbols)
 - [Matrices](#matrices)
   - [Delimiters in Matrix Environments](#delimiters-in-matrix-environments)
+  - [Cartesian Basis Vectors](#cartesian-basis-vectors)
 - [Mathematical Functions and Operations](#mathematical-functions-and-operations)
 - [Mathematical Constants](#mathematical-constants)
 - [Logical Operators](#logical-operators)
@@ -150,6 +151,24 @@ In case multiple matrices are computed into a single matrix, the left most matri
 > ```latex
 > \begin{bmatrix} ... \end{bmatrix} + \begin{pmatrix} ... \end{pmatrix} = \begin{bmatrix} ... \end{bmatrix}
 > ```
+
+### Cartesian Basis Vectors
+
+The three Cartesian unit basis vectors of ℝ³ can be written directly, instead of as single-column matrices. Each spelling below evaluates to the same 3-component vector constant, and they participate in all the usual vector operations (addition, scalar multiplication, cross/inner product, norm, unit vector).
+
+| Basis vector | Spellings                              | Value                  |
+| :----------- | :------------------------------------- | :--------------------- |
+| **i**        | `\ihat` / `\hat{i}` / `\hat{\imath}`   | `[1, 0, 0]ᵀ`           |
+| **j**        | `\jhat` / `\hat{j}` / `\hat{\jmath}`   | `[0, 1, 0]ᵀ`           |
+| **k**        | `\khat` / `\hat{k}`                    | `[0, 0, 1]ᵀ`           |
+
+*e.g. `2\ihat + 3\jhat - \khat` is the vector `[2, 3, -1]ᵀ`.*
+
+> [!NOTE]
+> Only `i`, `j`, `k`, `\imath`, `\jmath` inside `\hat{...}` are basis vectors. `\hat{x}` (or any other `\hat{...}`) stays an ordinary formatted symbol, and a bare `i` stays the imaginary unit. There is no `\hat{\kmath}` — LaTeX has no dotless-k.
+
+> [!TIP]
+> **Smart Solve** remembers which notation family a vector was defined with and renders results back in that family — so a vector defined with `\ihat`/`\jhat`/`\khat` round-trips in alias notation, one defined with `\hat{i}` round-trips in hat notation, and one defined as a matrix renders back as a matrix. See [design_docs.md](../design_docs.md) for the full provenance rules.
 
 ## Mathematical Functions and Operations
 

@@ -4,9 +4,10 @@ import { LatexMathCommand } from "./LatexMathCommand";
 import { EquationExtractor } from "/utils/EquationExtractor";
 import { LmatEnvironment } from "/models/cas/LmatEnvironment";
 import { formatLatex } from "/utils/LatexFormatter";
+import { IGNORE_NOTICE } from "/utils/IgnoreMarker";
 import { EvaluateArgsPayload, EvaluateMessage, EvaluateMode, EvaluateResponse } from "/models/cas/messages/EvaluateMessage";
 
-export type Expression = { from: number, to: number, contents: string, is_multiline: boolean };
+export type Expression = { from: number, to: number, contents: string, is_multiline: boolean, ignored: boolean };
 
 export class EvaluateCommand extends LatexMathCommand {
     readonly id: string;
@@ -22,6 +23,11 @@ export class EvaluateCommand extends LatexMathCommand {
 
         if (expression === null) {
             new Notice("You are not inside a math block");
+            return;
+        }
+
+        if (expression.ignored) {
+            new Notice(IGNORE_NOTICE);
             return;
         }
 
@@ -45,7 +51,9 @@ export class EvaluateCommand extends LatexMathCommand {
                 from: editor.posToOffset(editor.getCursor('from')),
                 to: editor.posToOffset(editor.getCursor('to')),
                 contents: editor.getSelection(),
-                is_multiline: expression?.is_multiline ?? false
+                is_multiline: expression?.is_multiline ?? false,
+                // Block-level ignore wins even when the selection omits the marker.
+                ignored: expression?.ignored ?? false,
             };
         }
 

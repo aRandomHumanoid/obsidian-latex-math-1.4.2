@@ -29,6 +29,15 @@ from lmat_cas_client.compiling.transforming.SystemOfExpr import SystemOfExpr
 from lmat_cas_client.LmatEnvironment import LmatEnvironment
 from lmat_cas_client.LmatLatexPrinter import lmat_latex
 from lmat_cas_client.smart_solve import Tiebreaker
+from lmat_cas_client.smart_solve.MatrixSupport import (
+    assignment_value,
+    has_matrix,
+    is_matrix,
+    matrices_equal,
+    matrix_assignment_sides,
+    to_plain_matrix,
+)
+from lmat_cas_client.smart_solve.Provenance import compute_family, family_of
 from lmat_cas_client.smart_solve.Renderer import DEFAULT_SIG_FIGS, render
 
 # --- Result envelope -------------------------------------------------------
@@ -102,7 +111,7 @@ def _resolve_definition_value(
 
     if isinstance(defn, MultiValueDefinition):
         if not for_calculation:
-            return defn.defined_value(def_store), []
+            return to_plain_matrix(defn.defined_value(def_store)), []
 
         selection = Tiebreaker.select(list(defn.values), None)
         toasts: list[Toast] = []
@@ -114,10 +123,12 @@ def _resolve_definition_value(
                     f"Multiple stored values for {sym}: {{{all_sols}}}. Using {render(selection.chosen, sig_figs)} for this calculation.",
                 )
             )
-        return selection.chosen, toasts
+        return to_plain_matrix(selection.chosen), toasts
 
     try:
-        return defn.defined_value(def_store), []
+        # Normalize matrix values to a plain sympy matrix: the compiler's
+        # LatexMatrix subclass breaks scalar `subs`/evaluation downstream.
+        return to_plain_matrix(defn.defined_value(def_store)), []
     except Exception:
         return None, []
 
@@ -150,8 +161,10 @@ def _resolve_sig_figs(environment: LmatEnvironment) -> int:
     return getattr(environment, "render_sig_figs", None) or DEFAULT_SIG_FIGS
 
 
-def _assignment_latex(target: Symbol, value: Expr, sig_figs: int) -> str:
-    return f"{lmat_latex(target)} = {render(value, sig_figs)}"
+def _assignment_latex(
+    target: Symbol, value: Expr, sig_figs: int, family: str | None = None
+) -> str:
+    return f"{lmat_latex(target)} = {render(value, sig_figs, family)}"
 
 
 # Match a LaTeX comment that contains `ref` as a whole word.
@@ -171,13 +184,14 @@ def _resolve_prior(target: Symbol, def_store: DefinitionStore) -> Optional[Expr]
     if defn is None:
         return None
     if isinstance(defn, MultiValueDefinition):
-        return Tiebreaker.select(list(defn.values), None).chosen
+        return to_plain_matrix(Tiebreaker.select(list(defn.values), None).chosen)
     try:
-        value = defn.defined_value(def_store)
+        value = to_plain_matrix(defn.defined_value(def_store))
     except Exception:
         return None
     # An AssumptionDefinition just stores the symbol; that means "x is real" not "x = ...".
-    if value == target:
+    # Guard the comparison: `matrix == symbol` would go elementwise, not bool.
+    if not is_matrix(value) and value == target:
         return None
     return value
 
@@ -216,6 +230,8 @@ def _satisfies_assumptions(target: Symbol, sol: Expr) -> bool:
 
 
 def _values_equal(a: Expr, b: Expr) -> bool:
+    if is_matrix(a) or is_matrix(b):
+        return matrices_equal(a, b)
     try:
         diff = simplify(a - b)
     except Exception:
@@ -405,16 +421,103 @@ class SmartSolveDispatcher:
 
         try:
             expr = self._compiler.compile(latex_str, asm_store)
-        except Exception as e:
-            return _error(f"Could not parse expression: {e}")
+        except Exception:
+            # The scalar-symbol parse can't build `symbol + <literal vector>`
+            # (e.g. `u + \ihat`). Retry with matrix-valued definitions
+            # substituted so vector symbols become matrices.
+            try:
+                expr = self._compiler.compile(
+                    latex_str, self._matrix_def_store(def_store, asm_store)
+                )
+            except Exception as e:
+                return _error(f"Could not parse expression: {e}")
 
         if isinstance(expr, SystemOfExpr):
             return _error("Multi-equation blocks are not yet supported by Smart Solve.")
 
-        if isinstance(expr, Relational):
-            return self._dispatch_relation(expr, def_store, constraints, environment)
+        # Trailing-`=` blocks parse as Eq(lhs, Dummy()): they are an *evaluation*
+        # of lhs, so route them through the expression path (recompile +
+        # provenance), not relation handling.
+        trailing_equals = isinstance(expr, Equality) and isinstance(expr.rhs, Dummy)
 
-        return self._dispatch_expression(expr, def_store, constraints, environment)
+        if isinstance(expr, Relational) and not trailing_equals:
+            return self._dispatch_relation(
+                expr, def_store, constraints, environment, latex_str
+            )
+
+        if trailing_equals:
+            expr = expr.lhs
+
+        # Notation provenance is computed from the symbols referenced *before*
+        # the recompile inlines matrix-valued definitions.
+        referenced = set(getattr(expr, "free_symbols", set()))
+        family = compute_family(latex_str, referenced, def_store)
+
+        # Type-dispatched operators (`\times` = cross product, `\langle . | . \rangle`
+        # = inner product, `\Vert . \Vert` = norm) are resolved by the parser based
+        # on operand type. Parsing against the assumptions-only store leaves vector
+        # symbols as scalars, so those operators get the wrong (scalar) meaning.
+        # Recompile with any matrix-valued definitions in scope so they dispatch
+        # correctly; scalar definitions are still substituted later by the
+        # expression handler (preserving multi-value / constraint behavior).
+        expr = self._recompile_with_matrix_defs(latex_str, expr, def_store, asm_store)
+        if isinstance(expr, Equality) and isinstance(expr.rhs, Dummy):
+            # Recompiling the trailing-`=` source reproduces the Eq wrapper.
+            expr = expr.lhs
+
+        return self._dispatch_expression(
+            expr, def_store, constraints, environment, family
+        )
+
+    def _recompile_with_matrix_defs(
+        self,
+        latex_str: str,
+        expr: Expr,
+        def_store: DefinitionStore,
+        asm_store: DefinitionStore,
+    ) -> Expr:
+        try:
+            free_symbols = expr.free_symbols
+        except AttributeError:
+            return expr
+
+        matrix_defs = {}
+        for sym in free_symbols:
+            defn = def_store.get_definition(sym.name)
+            if defn is None:
+                continue
+            try:
+                value = defn.defined_value(def_store)
+            except Exception:
+                continue
+            if is_matrix(value):
+                matrix_defs[sym.name] = defn
+
+        if not matrix_defs:
+            return expr
+
+        try:
+            return self._compiler.compile(latex_str, asm_store.override(matrix_defs))
+        except Exception:
+            # Fall back to the scalar-substitution path on any recompile failure.
+            return expr
+
+    @staticmethod
+    def _matrix_def_store(
+        def_store: DefinitionStore, asm_store: DefinitionStore
+    ) -> DefinitionStore:
+        """`asm_store` augmented with every matrix-valued definition, so a block
+        that adds a vector symbol to a literal vector still parses."""
+        matrix_defs = {}
+        for name in def_store.get_definition_names():
+            defn = def_store.get_definition(name)
+            try:
+                value = defn.defined_value(def_store)
+            except Exception:
+                continue
+            if is_matrix(value):
+                matrix_defs[name] = defn
+        return asm_store.override(matrix_defs)
 
     @staticmethod
     def _create_assumption_store(environment: LmatEnvironment) -> DefinitionStore:
@@ -435,6 +538,7 @@ class SmartSolveDispatcher:
         def_store: DefinitionStore,
         constraints,  # ConstraintStore — passed as positional to avoid circular import
         environment: LmatEnvironment,
+        latex_str: str,
     ) -> DispatchResult:
         # Function-application definition: lhs is f(args).
         # Currently the existing := handling covers this via the TS-side regex;
@@ -442,13 +546,16 @@ class SmartSolveDispatcher:
         if isinstance(expr.lhs, AppliedUndef):
             return _silent()
 
-        rhs = expr.rhs
-
-        # Trailing-`=` blocks parse as Eq(lhs, Dummy()). Treat as evaluation of lhs.
-        if isinstance(expr, Equality) and isinstance(rhs, Dummy):
-            return self._dispatch_expression(
-                expr.lhs, def_store, constraints, environment
+        # Matrix/vector assignment (`\vec v = <vector>`): handle before the
+        # variable-counting below. The vector may itself carry free parameters,
+        # which would otherwise make this look like a multi-variable system.
+        target, value_side = matrix_assignment_sides(expr)
+        if target is not None:
+            assignment = self._assign_matrix(
+                target, value_side, def_store, environment, latex_str
             )
+            if assignment is not None:
+                return assignment
 
         syntactic_vars: set[Symbol] = set(expr.free_symbols)
 
@@ -464,6 +571,20 @@ class SmartSolveDispatcher:
             s for s in syntactic_vars if def_store.get_definition(s.name) is not None
         }
         targets = syntactic_vars - defined_syms
+
+        # A single isolated target whose value side becomes a matrix once
+        # definitions are substituted is a vector assignment (e.g.
+        # `\vec w = 2\vec v`). Eq(scalar, matrix) would otherwise collapse to a
+        # Boolean and be misreported as a contradiction.
+        if len(targets) == 1:
+            only_target = next(iter(targets))
+            value_side = assignment_value(expr, only_target)
+            if value_side is not None:
+                assignment = self._assign_matrix(
+                    only_target, value_side, def_store, environment, latex_str
+                )
+                if assignment is not None:
+                    return assignment
 
         substituted, toasts = _substitute_defined(expr, targets, def_store)
 
@@ -491,6 +612,16 @@ class SmartSolveDispatcher:
         # accumulated system and try to solve as much of it as possible.
         from lmat_cas_client.smart_solve.ConstraintStore import apply_determined
 
+        # The linear/nonlinear solvers behind the constraint store don't handle
+        # matrix-valued equations; bail with a clear error rather than crash.
+        if has_matrix(substituted.lhs) or has_matrix(substituted.rhs):
+            result = _error(
+                "Smart Solve can't solve matrix/vector equation systems. "
+                "Assign vectors with `=`, or use the Solve command."
+            )
+            result.toasts = toasts + result.toasts
+            return result
+
         new_constraint = substituted.lhs - substituted.rhs
         determined = constraints.solve_and_materialize(def_store, new_constraint)
 
@@ -513,6 +644,42 @@ class SmartSolveDispatcher:
         # The block itself doesn't get an inline display.
         return _silent(toasts)
 
+    def _assign_matrix(
+        self,
+        target: Symbol,
+        value_side: Expr,
+        def_store: DefinitionStore,
+        environment: LmatEnvironment,
+        latex_str: str,
+    ) -> Optional[DispatchResult]:
+        """Evaluate `value_side` (substituting defined symbols) and, if it is a
+        matrix, treat the block as `target = <matrix>` with override semantics.
+
+        Returns None if the value doesn't evaluate to a matrix, so the caller
+        can fall back to normal relation handling.
+        """
+        substituted, toasts = _substitute_defined(value_side, {target}, def_store)
+        try:
+            value = _evaluate_expression(substituted, environment)
+        except Exception as e:
+            return _error(f"Evaluation failed: {e}")
+        if not is_matrix(value):
+            return None
+        # Provenance comes from the value side (the target's own prior family
+        # does not contribute — the defining block's notation wins).
+        family = compute_family(latex_str, value_side.free_symbols, def_store)
+        prior_value = _resolve_prior(target, def_store)
+        result = self._finish_single_solve(
+            target,
+            value,
+            prior_value,
+            toasts=list(toasts),
+            sig_figs=_resolve_sig_figs(environment),
+            family=family,
+            prior_family=family_of(def_store.get_definition(target.name)),
+        )
+        return result
+
     def _verify_boolean(self, b: BooleanAtom, original: Relational) -> DispatchResult:
         """Verification when substitution produced True/False directly."""
         if isinstance(b, BooleanTrue):
@@ -525,6 +692,18 @@ class SmartSolveDispatcher:
         ])
 
     def _verify_concrete(self, lhs: Expr, rhs: Expr) -> DispatchResult:
+        if is_matrix(lhs) or is_matrix(rhs):
+            # Matrix/vector equality check (e.g. verifying a computed vector).
+            equal = _values_equal(lhs, rhs)
+            if equal:
+                return _silent()
+            return _silent([
+                Toast(
+                    "error",
+                    f"Contradiction: {lmat_latex(lhs)} ≠ {lmat_latex(rhs)}.",
+                )
+            ])
+
         try:
             difference = simplify(lhs - rhs)
         except Exception:
@@ -555,6 +734,29 @@ class SmartSolveDispatcher:
         # info toast, and no-op per design_docs §"Override Behavior Details".
         prior_value = _resolve_prior(target, def_store)
 
+        # Matrix/vector assignment: `solveset` can't solve matrix-valued
+        # equations. If `target` is isolated on one side and the other side
+        # evaluates to a matrix, treat the block as a direct definition
+        # (`\vec v = <vector>`) rather than a solve.
+        assigned = assignment_value(equation, target)
+        if assigned is not None:
+            try:
+                value = _evaluate_expression(assigned, environment)
+            except Exception as e:
+                return _error(f"Evaluation failed: {e}")
+            if is_matrix(value):
+                return self._finish_single_solve(
+                    target, value, prior_value, toasts=[], sig_figs=sig_figs
+                )
+
+        # Any other equation that still involves a matrix (e.g. `2\vec v = b`,
+        # `M\vec x = b`) is a matrix equation Smart Solve doesn't solve.
+        if has_matrix(equation.lhs) or has_matrix(equation.rhs):
+            return _error(
+                "Smart Solve can't solve matrix/vector equations. "
+                "Assign a vector with `=`, or use the Solve command."
+            )
+
         try:
             solutions = solveset(equation, target, domain=domain)
         except Exception as e:
@@ -580,7 +782,7 @@ class SmartSolveDispatcher:
                             Toast(
                                 "warning",
                                 "No real solution exists. Complex solutions exist; "
-                                "enable complex mode in plugin settings or this "
+                                'set `[solve] domain = "Complexes"` in this '
                                 "document's `lmat` block.",
                             )
                         )
@@ -613,7 +815,7 @@ class SmartSolveDispatcher:
                             Toast(
                                 "warning",
                                 "No real solution exists. Complex solutions exist; "
-                                "enable complex mode in plugin settings or this "
+                                'set `[solve] domain = "Complexes"` in this '
                                 "document's `lmat` block.",
                             )
                         )
@@ -658,6 +860,8 @@ class SmartSolveDispatcher:
         prior_value: Optional[Expr],
         toasts: list[Toast],
         sig_figs: int = DEFAULT_SIG_FIGS,
+        family: str | None = None,
+        prior_family: str | None = None,
     ) -> DispatchResult:
         """Apply override semantics from design_docs §"Override Behavior Details"."""
         if prior_value is not None:
@@ -667,12 +871,12 @@ class SmartSolveDispatcher:
             toasts = toasts + [
                 Toast(
                     "info",
-                    f"Overriding {target}: was {render(prior_value, sig_figs)}, "
-                    f"now {render(value, sig_figs)}.",
+                    f"Overriding {target}: was {render(prior_value, sig_figs, prior_family)}, "
+                    f"now {render(value, sig_figs, family)}.",
                 )
             ]
 
-        return _display(_assignment_latex(target, value, sig_figs), toasts)
+        return _display(_assignment_latex(target, value, sig_figs, family), toasts)
 
     # --- Expression case --------------------------------------------------
 
@@ -682,6 +886,7 @@ class SmartSolveDispatcher:
         def_store: DefinitionStore,
         constraints,  # ConstraintStore — positional to keep the import in handle()
         environment: LmatEnvironment,
+        family: str | None = None,
     ) -> DispatchResult:
         # Substitute all definitions, then evaluate.
         if isinstance(expr, Symbol):
@@ -696,7 +901,9 @@ class SmartSolveDispatcher:
                     result = _evaluate_expression(value, environment)
                 except Exception as e:
                     return _error(f"Evaluation failed: {e}")
-                return _display(render(result, _resolve_sig_figs(environment)), toasts)
+                return _display(
+                    render(result, _resolve_sig_figs(environment), family), toasts
+                )
 
         substituted, toasts = _substitute_defined(expr, set(), def_store)
 
@@ -711,7 +918,7 @@ class SmartSolveDispatcher:
         unresolved = {s for s in result.free_symbols if not isinstance(s, Dummy)}
 
         if not unresolved:
-            return _display(render(result, sig_figs), toasts)
+            return _display(render(result, sig_figs, family), toasts)
 
         # Symbolic fallback: if the accumulated constraints over-determine some
         # of the unresolved symbols, substitute them in. The expression may
@@ -720,7 +927,13 @@ class SmartSolveDispatcher:
         resolved, constraint_toasts = _try_resolve_via_constraints(
             result, constraints, def_store
         )
-        if resolved is not None and resolved != result:
+        # Matrix-safe progress check: `matrix != matrix` is elementwise and would
+        # recurse on LatexMatrix, so compare matrices structurally instead.
+        if is_matrix(resolved) or is_matrix(result):
+            made_progress = resolved is not None and not _values_equal(resolved, result)
+        else:
+            made_progress = resolved is not None and resolved != result
+        if made_progress:
             still_unresolved = {
                 s for s in resolved.free_symbols if not isinstance(s, Dummy)
             }
@@ -733,7 +946,7 @@ class SmartSolveDispatcher:
                         f"Symbolic result (free parameters: {free_list}).",
                     )
                 )
-            return _display(render(resolved, sig_figs), all_toasts)
+            return _display(render(resolved, sig_figs, family), all_toasts)
 
         var_list = ", ".join(sorted(str(s) for s in unresolved))
         failure = _error(f"Undefined variable(s): {var_list}.")

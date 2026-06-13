@@ -92,7 +92,12 @@ _number: _numeric_number | _digit
 // it may be a bit counter intuitive, but here pi (and other constants) are essentially seen as a "_digit".
 _digit: _numeric_digit | _constant
 
-_constant: CONST_INFINITY
+_constant: CONST_INFINITY | basis_vector
+
+// Cartesian unit basis vectors of R^3. All spellings evaluate to the same
+// 3-component vector constants; notation provenance (alias vs hat) is recovered
+// separately from the block source, not from these tokens.
+basis_vector: BASIS_VECTOR_I | BASIS_VECTOR_J | BASIS_VECTOR_K
 
 _numeric_digit: NUMERIC_DIGIT
 _numeric_number: HEXADECIMAL_NUMBER | BASE_10_NUMBER | OCTAL_NUMBER | BINARY_NUMBER
@@ -583,6 +588,14 @@ _FUNC_MOD: "\\mod"
 
 // un-redefinable mathematical constants
 CONST_INFINITY: "\\infty"
+
+// Cartesian unit basis vectors. The hat forms must out-prioritize CMD_HAT so
+// `\hat{i}` lexes as a basis vector while `\hat{x}` stays a formatted symbol;
+// longest-match already favors them, the explicit priority is belt-and-braces.
+// Only i / j / k / \imath / \jmath are basis letters (there is no dotless k).
+BASIS_VECTOR_I.2: "\\ihat" | /\\hat\s*\{\s*(i|\\imath)\s*\}/
+BASIS_VECTOR_J.2: "\\jhat" | /\\hat\s*\{\s*(j|\\jmath)\s*\}/
+BASIS_VECTOR_K.2: "\\khat" | /\\hat\s*\{\s*k\s*\}/
 
 // Text formatting
 

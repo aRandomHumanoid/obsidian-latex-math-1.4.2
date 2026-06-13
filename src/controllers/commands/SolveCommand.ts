@@ -1,5 +1,6 @@
 import { App, Editor, MarkdownView, Notice } from "obsidian";
 import { EquationExtractor } from "/utils/EquationExtractor";
+import { IGNORE_NOTICE } from "/utils/IgnoreMarker";
 import { formatLatex } from "/utils/LatexFormatter";
 import { CasServer } from "/services/CasServer";
 import { LmatEnvironment } from "/models/cas/LmatEnvironment";
@@ -20,6 +21,11 @@ export class SolveCommand extends LatexMathCommand {
 
         if (equation === null) {
             new Notice("You are not inside a math block");
+            return;
+        }
+
+        if (equation.ignored) {
+            new Notice(IGNORE_NOTICE);
             return;
         }
 

@@ -102,4 +102,36 @@ describe("MathBlockIterator", () => {
         const slice = text.slice(blocks[0].from, blocks[0].to);
         expect(slice).toBe("$$x = 3$$");
     });
+
+    describe("lmat:ignore detection", () => {
+        test("flags an inline block preceded by the marker", () => {
+            const text = "<!-- lmat:ignore --> $x + y$ and normal text";
+            const blocks = iterateMathBlocks(text);
+            expect(blocks).toHaveLength(1);
+            expect(blocks[0].ignored).toBe(true);
+        });
+
+        test("flags a display block with the marker on the line above", () => {
+            const text = "<!-- lmat:ignore -->\n$$\nx^2 + y^2 = z^2\n$$";
+            const blocks = iterateMathBlocks(text);
+            expect(blocks[0].ignored).toBe(true);
+        });
+
+        test("unmarked blocks are not ignored", () => {
+            const blocks = iterateMathBlocks("$$x = 3$$\n$$y = 4$$");
+            expect(blocks.map(b => b.ignored)).toEqual([false, false]);
+        });
+
+        test("the marker binds to the next block only", () => {
+            const text = "<!-- lmat:ignore --> $$a = 1$$\n$$b = 2$$";
+            const blocks = iterateMathBlocks(text);
+            expect(blocks.map(b => b.ignored)).toEqual([true, false]);
+        });
+
+        test("prose between the marker and the block breaks the association", () => {
+            const text = "<!-- lmat:ignore --> note: $$x = 3$$";
+            const blocks = iterateMathBlocks(text);
+            expect(blocks[0].ignored).toBe(false);
+        });
+    });
 });

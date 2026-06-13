@@ -26,6 +26,14 @@ from lmat_cas_client.smart_solve.ConstraintStore import (
     ConstraintStore,
     apply_determined,
 )
+from lmat_cas_client.smart_solve.MatrixSupport import (
+    assignment_value,
+    has_matrix,
+    is_matrix,
+    matrix_assignment_sides,
+    to_plain_matrix,
+)
+from lmat_cas_client.smart_solve.Provenance import VectorDefinition, compute_family
 
 
 @dataclass
@@ -173,10 +181,33 @@ def _replay_one(
         )
     )
 
-    expr = compiler.compile(latex, asm_store)
+    try:
+        expr = compiler.compile(latex, asm_store)
+    except Exception:
+        # Mirror Dispatcher: a block adding a vector symbol to a literal vector
+        # (`u + \ihat`) can't parse with scalar symbols; retry with matrix-valued
+        # definitions substituted.
+        expr = compiler.compile(latex, _matrix_def_store(store, asm_store))
 
     if isinstance(expr, Relational):
-        _replay_relation(expr, store, constraints, environment)
+        _replay_relation(expr, store, constraints, environment, latex)
+
+
+def _matrix_def_store(
+    store: DefinitionStore, asm_store: DefinitionStore
+) -> DefinitionStore:
+    """`asm_store` augmented with every matrix-valued definition (mirrors
+    Dispatcher._matrix_def_store)."""
+    matrix_defs = {}
+    for name in store.get_definition_names():
+        defn = store.get_definition(name)
+        try:
+            value = defn.defined_value(store)
+        except Exception:
+            continue
+        if is_matrix(value):
+            matrix_defs[name] = defn
+    return asm_store.override(matrix_defs)
 
 
 def _replay_relation(
@@ -184,6 +215,7 @@ def _replay_relation(
     store: DefinitionStore,
     constraints: ConstraintStore,
     environment: LmatEnvironment,
+    latex: str,
 ) -> None:
     if isinstance(expr, Equality) and isinstance(expr.rhs, Dummy):
         return
@@ -191,17 +223,37 @@ def _replay_relation(
     if isinstance(expr.lhs, AppliedUndef):
         return
 
+    # Matrix/vector assignment (`\vec v = <vector>`): store it as a definition.
+    # Mirrors Dispatcher._assign_matrix so the persisted context matches what
+    # the dispatcher displayed. The vector may carry its own free parameters.
+    target, value_side = matrix_assignment_sides(expr)
+    if target is not None:
+        if _store_matrix_assignment(target, value_side, store, latex):
+            return
+
     syntactic = set(expr.free_symbols)
     if len(syntactic) == 0:
         return
 
     if len(syntactic) == 1:
         target = next(iter(syntactic))
-        _solve_and_store(expr, target, store, environment)
+        _solve_and_store(expr, target, store, environment, latex)
         return
 
     # 2+ syntactic vars: substitute defined ones, see what remains.
     defined = {s for s in syntactic if store.get_definition(s.name) is not None}
+
+    # A single isolated target whose value side becomes a matrix after
+    # substitution is a vector assignment (`\vec w = 2\vec v`). Mirrors
+    # Dispatcher._dispatch_relation.
+    undefined = syntactic - defined
+    if len(undefined) == 1:
+        only_target = next(iter(undefined))
+        value_side = assignment_value(expr, only_target)
+        if value_side is not None and _store_matrix_assignment(
+            only_target, value_side, store, latex
+        ):
+            return
 
     substituted = expr
     for sym in defined:
@@ -213,7 +265,8 @@ def _replay_relation(
                 value = Tiebreaker.select(list(defn.values), None).chosen
             else:
                 value = defn.defined_value(store)
-            substituted = substituted.subs(sym, value)
+            # Normalize matrices: the LatexMatrix subclass breaks scalar `subs`.
+            substituted = substituted.subs(sym, to_plain_matrix(value))
         except Exception:
             return
 
@@ -223,7 +276,7 @@ def _replay_relation(
     remaining = substituted.free_symbols
     if len(remaining) == 1:
         target = next(iter(remaining))
-        _solve_and_store(substituted, target, store, environment)
+        _solve_and_store(substituted, target, store, environment, latex)
         return
 
     # ≥2 remaining unresolved vars → add as a constraint and try to materialize
@@ -235,11 +288,62 @@ def _replay_relation(
         apply_determined(store, determined)
 
 
+def _store_vector(
+    target: Symbol, value, store: DefinitionStore, latex: str, referenced
+) -> None:
+    """Store `target` as a vector definition, recording its notation provenance
+    (design_docs.md §"Rendering Provenance Requirements").
+
+    `referenced` is the value side's symbols *before* substitution — provenance
+    derives from them (and the block's literal notation), so it must match what
+    Dispatcher._assign_matrix computes for the same block.
+    """
+    family = compute_family(latex, referenced, store)
+    store.set_definition(target.name, VectorDefinition(to_plain_matrix(value), family))
+
+
+def _store_matrix_assignment(
+    target: Symbol,
+    value_side,
+    store: DefinitionStore,
+    latex: str,
+) -> bool:
+    """Substitute any defined symbols into `value_side`; if it is a matrix,
+    store `target := <matrix>` (with provenance) and return True. Otherwise
+    return False."""
+    # Capture referenced symbols before substitution erases them.
+    referenced = value_side.free_symbols - {target}
+    value = value_side
+    for sym in list(value.free_symbols):
+        if sym == target:
+            continue
+        defn = store.get_definition(sym.name)
+        if defn is None:
+            continue
+        try:
+            if isinstance(defn, MultiValueDefinition):
+                sub = Tiebreaker.select(list(defn.values), None).chosen
+            else:
+                sub = defn.defined_value(store)
+            value = value.subs(sym, to_plain_matrix(sub))
+        except Exception:
+            continue
+    try:
+        value = value.doit()
+    except Exception:
+        pass
+    if not is_matrix(value):
+        return False
+    _store_vector(target, value, store, latex, referenced)
+    return True
+
+
 def _solve_and_store(
     equation: Relational,
     target: Symbol,
     store: DefinitionStore,
     environment: LmatEnvironment,
+    latex: str,
 ) -> None:
     domain = S.Complexes
     if environment.solve_domain and environment.solve_domain.strip():
@@ -247,6 +351,25 @@ def _solve_and_store(
             domain = sympify(environment.solve_domain)
         except Exception:
             pass
+
+    # Matrix/vector assignment (`\vec v = <vector>`): store it as a definition.
+    # `solveset` can't solve matrix-valued equations, so this must be handled
+    # before the solve path. Mirrors Dispatcher._solve_single.
+    assigned = assignment_value(equation, target)
+    if assigned is not None:
+        referenced = assigned.free_symbols - {target}
+        value = assigned
+        try:
+            value = simplify(value.doit())
+        except Exception:
+            pass
+        if is_matrix(value):
+            _store_vector(target, value, store, latex, referenced)
+            return
+
+    # Other matrix equations aren't solvable here; skip (don't crash solveset).
+    if has_matrix(equation.lhs) or has_matrix(equation.rhs):
+        return
 
     try:
         solutions = solveset(equation, target, domain=domain)

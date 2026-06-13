@@ -4,7 +4,9 @@
 
 **LaTeX Math** provides its main functionality through a series of Obsidian commands.
 
-This section of the documentation goes through each command in detail.
+This section of the documentation goes through each command in detail — including this fork's [Smart Solve](COMMANDS.md#smart-solve-latex-expression) command, which dispatches each math block in the current section to define, solve, verify, or evaluate based on its structure.
+
+For the full Smart Solve design (dispatch algorithm, tiebreaker rules, constraint accumulation), see [design_docs.md](../design_docs.md) in the repository root.
 
 ## [LaTeX Syntax (how to write LaTeX the plugin understands)](SYNTAX.md)
 
@@ -32,9 +34,9 @@ List of built-in physical constants.
 
 ## [LaTeX Math (`lmat`) Environments](LMAT_ENV.md)
 
-The most important function of the **LaTeX Math** environment is to reset definitions throughout one's note.
+The **LaTeX Math** environment configures section-scoped symbol assumptions, unit systems, solve domains, and Smart Solve numeric rendering.
 
-The **LaTeX Math** environment also has many other powerful features, which this section covers.
+It also resets location-based definitions, and for Smart Solve it acts as a section divider that resets implicit definitions and constraints for the section that follows.
 
 This section provides an overview of the purpose of **LaTeX Math** environments and how to use the `lmat` code block.
 

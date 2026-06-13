@@ -2,6 +2,7 @@ import { App, Editor, MarkdownView, Notice } from "obsidian";
 import { CasServer } from "/services/CasServer";
 import { LatexMathCommand } from "./LatexMathCommand";
 import { EquationExtractor } from "/utils/EquationExtractor";
+import { IGNORE_NOTICE } from "/utils/IgnoreMarker";
 import { LmatEnvironment } from "/models/cas/LmatEnvironment";
 import { formatLatex } from "/utils/LatexFormatter";
 import { TruthTableArgsPayload, TruthTableFormat, TruthTableMessage, TruthTableResponse } from "/models/cas/messages/TruthTableMessage";
@@ -21,6 +22,11 @@ export class TruthTableCommand extends LatexMathCommand {
 
         if (equation === null) {
             new Notice("You are not inside a math block");
+            return;
+        }
+
+        if (equation.ignored) {
+            new Notice(IGNORE_NOTICE);
             return;
         }
 

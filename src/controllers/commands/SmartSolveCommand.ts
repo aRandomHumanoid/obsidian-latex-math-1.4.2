@@ -65,7 +65,17 @@ export class SmartSolveCommand extends LatexMathCommand {
         let error_count = 0;
         const formatted_cache = new Map<string, string>();
 
+        // `<!-- lmat:ignore -->` blocks are excluded from evaluation entirely:
+        // they are never sent to the CAS (so they contribute no definitions or
+        // constraints to replay) and never receive a marker. A stale plugin
+        // result left on such a block is still stripped (handled below).
+        const ignored_blocks = all_blocks.filter((block) => block.ignored);
+        const cursor_in_ignored_block = ignored_blocks.some(
+            (block) => cursor_offset >= block.from && cursor_offset <= block.to,
+        );
+
         const runnable_blocks = all_blocks
+            .filter((block) => !block.ignored)
             .map((block) => {
                 const split = splitSource(block.contents);
                 return {
@@ -77,28 +87,30 @@ export class SmartSolveCommand extends LatexMathCommand {
             })
             .filter((entry) => entry.source_trimmed !== "");
 
-        if (runnable_blocks.length === 0) {
+        if (runnable_blocks.length === 0 && ignored_blocks.length === 0) {
             new Notice("No non-empty math blocks in current section");
             return;
         }
 
-        let results: SmartSolveResponse[];
-        try {
-            const response = await cas_server.send(new SmartSolveSectionMessage(
-                new SmartSolveSectionArgsPayload(
-                    section_context.environment,
-                    runnable_blocks.map(({ source_trimmed }) => ({ contents: source_trimmed })),
-                ),
-            )).response;
-            const section_response = this.response_verifier.verifyResponse<SmartSolveSectionResponse>(response);
-            results = section_response.results;
-        } catch (e) {
-            new Notice(`Smart Solve error: ${e instanceof Error ? e.message : String(e)}`, 8000);
-            return;
-        }
+        let results: SmartSolveResponse[] = [];
+        if (runnable_blocks.length > 0) {
+            try {
+                const response = await cas_server.send(new SmartSolveSectionMessage(
+                    new SmartSolveSectionArgsPayload(
+                        section_context.environment,
+                        runnable_blocks.map(({ source_trimmed }) => ({ contents: source_trimmed })),
+                    ),
+                )).response;
+                const section_response = this.response_verifier.verifyResponse<SmartSolveSectionResponse>(response);
+                results = section_response.results;
+            } catch (e) {
+                new Notice(`Smart Solve error: ${e instanceof Error ? e.message : String(e)}`, 8000);
+                return;
+            }
 
-        if (results.length !== runnable_blocks.length) {
-            throw new Error(`Smart Solve section result count mismatch: expected ${runnable_blocks.length}, got ${results.length}`);
+            if (results.length !== runnable_blocks.length) {
+                throw new Error(`Smart Solve section result count mismatch: expected ${runnable_blocks.length}, got ${results.length}`);
+            }
         }
 
         for (let index = 0; index < runnable_blocks.length; index++) {
@@ -158,6 +170,27 @@ export class SmartSolveCommand extends LatexMathCommand {
             }
         }
 
+        // Strip any stale plugin result left on an ignored block. Ignored blocks
+        // are never evaluated and never get a new marker, but the plugin stops
+        // owning a result the moment a block is marked ignored.
+        for (const block of ignored_blocks) {
+            if (this.current_run_id !== this_run_id) return;
+
+            const split = splitSource(block.contents);
+            if (!split.has_marker) continue;
+
+            const original_raw = editor.getRange(editor.offsetToPos(block.from), editor.offsetToPos(block.to));
+            const next_char_is_newline = doc_text.slice(block.to, block.to + 1) === "\n";
+            const update: BlockUpdate = {
+                from: block.from,
+                to: block.to + (next_char_is_newline ? 1 : 0),
+                new_text: buildSmartSolveBlockText(original_raw, split.source.trim()),
+            };
+            if (update.new_text !== doc_text.slice(update.from, update.to)) {
+                updates.push(update);
+            }
+        }
+
         if (this.current_run_id !== this_run_id) return;
 
         // Apply edits back-to-front so each earlier replacement doesn't shift
@@ -180,9 +213,19 @@ export class SmartSolveCommand extends LatexMathCommand {
             new Notice(`...and ${extra} more notice${extra === 1 ? '' : 's'}`);
         }
 
-        const summary_parts = [`Re-evaluated ${display_count}/${all_blocks.length} block${all_blocks.length === 1 ? '' : 's'}`];
-        if (error_count > 0) summary_parts.push(`${error_count} error${error_count === 1 ? '' : 's'}`);
-        new Notice(summary_parts.join(' — '));
+        // A single informational notice when the cursor sits in an ignored
+        // block; ignored blocks elsewhere are skipped silently to avoid noise.
+        if (cursor_in_ignored_block) {
+            new Notice("This block is marked `lmat:ignore` and was skipped.");
+        }
+
+        // The summary counts only non-ignored runnable blocks, so ignored blocks
+        // neither inflate the denominator nor the error count.
+        if (runnable_blocks.length > 0) {
+            const summary_parts = [`Re-evaluated ${display_count}/${runnable_blocks.length} block${runnable_blocks.length === 1 ? '' : 's'}`];
+            if (error_count > 0) summary_parts.push(`${error_count} error${error_count === 1 ? '' : 's'}`);
+            new Notice(summary_parts.join(' — '));
+        }
     }
 
     private showToast(toast: SmartSolveToast): void {
